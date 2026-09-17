@@ -2,9 +2,17 @@ package com.loopers.domain.product;
 
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
+import jakarta.persistence.Column;
+import jakarta.persistence.Embeddable;
 
+@Embeddable
 public class Stock {
+
+    @Column(name = "stock")
     private int remaining;
+
+    protected Stock() {
+    }
 
     public Stock(int remaining) {
         if (remaining < 0) {

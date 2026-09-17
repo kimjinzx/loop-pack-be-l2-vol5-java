@@ -45,7 +45,6 @@ public class BrandService {
 
     @Transactional
     public void deleteBrand(Long id) {
-        // TODO: 연결된 미삭제 상품이 있으면 삭제를 거절해야 한다 (상품 도메인 추가 시 application에서 확인 후 호출)
         BrandModel brand = getBrandForAdmin(id);
         brand.delete();
     }
