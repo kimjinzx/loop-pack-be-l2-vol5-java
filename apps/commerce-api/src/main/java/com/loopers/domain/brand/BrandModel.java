@@ -25,4 +25,11 @@ public class BrandModel extends BaseEntity {
     public String getName() {
         return name;
     }
+
+    public void updateName(String name) {
+        if (name == null || name.isBlank()) {
+            throw new CoreException(ErrorType.BAD_REQUEST, "브랜드 이름은 비어있을 수 없습니다.");
+        }
+        this.name = name;
+    }
 }
