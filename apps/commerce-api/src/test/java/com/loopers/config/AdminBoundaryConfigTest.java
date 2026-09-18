@@ -23,6 +23,13 @@ class AdminBoundaryConfigTest {
     @Nested
     class AdminBoundary {
 
+        @DisplayName("ADMIN 권한을 가진 사용자가 요청하면, 통과된다.")
+        @Test
+        void allowsAccess_whenRequestedByAdminUser() throws Exception {
+            mvc.perform(get("/api-admin/v1/brands").with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk());
+        }
+
         @DisplayName("ADMIN 권한이 없는 사용자가 요청하면, 403을 응답한다.")
         @Test
         void returns403_whenRequestedByNonAdminUser() throws Exception {
