@@ -102,5 +102,25 @@ class ProductV1ApiE2ETest {
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody().data().get(0).name()).isEqualTo("cheap");
         }
+
+        @DisplayName("brandId를 지정하면, 해당 브랜드의 상품만 반환한다.")
+        @Test
+        void returnsOnlyProductsOfBrand_whenBrandIdIsProvided() {
+            // arrange
+            BrandModel nike = brandJpaRepository.save(new BrandModel("나이키"));
+            BrandModel adidas = brandJpaRepository.save(new BrandModel("아디다스"));
+            productJpaRepository.save(new ProductModel(nike.getId(), "runner", 10_000L, 5));
+            productJpaRepository.save(new ProductModel(adidas.getId(), "tracer", 20_000L, 5));
+
+            // act
+            ParameterizedTypeReference<ApiResponse<java.util.List<ProductV1Dto.ProductResponse>>> responseType =
+                new ParameterizedTypeReference<>() {};
+            ResponseEntity<ApiResponse<java.util.List<ProductV1Dto.ProductResponse>>> response =
+                testRestTemplate.exchange("/api/v1/products?brandId=" + nike.getId(), HttpMethod.GET, new HttpEntity<>(null), responseType);
+
+            // assert
+            assertThat(response.getBody().data()).hasSize(1);
+            assertThat(response.getBody().data().get(0).name()).isEqualTo("runner");
+        }
     }
 }

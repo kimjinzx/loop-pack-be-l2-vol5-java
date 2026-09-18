@@ -22,11 +22,12 @@ public class ProductV1Controller {
 
     @GetMapping
     public ApiResponse<List<ProductV1Dto.ProductResponse>> getProducts(
+        @RequestParam(required = false) Long brandId,
         @RequestParam(defaultValue = "LATEST") ProductSortType sort,
         @RequestParam(defaultValue = "0") int page,
         @RequestParam(defaultValue = "20") int size
     ) {
-        var products = productFacade.getProducts(sort, PageRequest.of(page, size));
+        var products = productFacade.getProducts(brandId, sort, PageRequest.of(page, size));
         return ApiResponse.success(products.map(ProductV1Dto.ProductResponse::from).getContent());
     }
 

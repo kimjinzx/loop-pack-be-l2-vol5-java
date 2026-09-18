@@ -34,8 +34,8 @@ public class ProductFacade {
         return ProductAdminInfo.from(product);
     }
 
-    public Page<ProductInfo> getProducts(ProductSortType sortType, Pageable pageable) {
-        Page<ProductModel> products = productService.getProducts(sortType, pageable);
+    public Page<ProductInfo> getProducts(Long brandId, ProductSortType sortType, Pageable pageable) {
+        Page<ProductModel> products = productService.getProducts(brandId, sortType, pageable);
         return products.map(toProductInfo(products.getContent()));
     }
 

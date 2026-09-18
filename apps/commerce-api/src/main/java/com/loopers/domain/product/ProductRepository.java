@@ -17,6 +17,8 @@ public interface ProductRepository {
 
     Page<ProductModel> findAllActive(Pageable pageable);
 
+    Page<ProductModel> findAllActiveByBrandId(Long brandId, Pageable pageable);
+
     List<ProductModel> findAllActiveByIds(List<Long> ids);
 
     boolean existsActiveByBrandId(Long brandId);

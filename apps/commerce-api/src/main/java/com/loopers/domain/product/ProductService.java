@@ -30,8 +30,11 @@ public class ProductService {
     }
 
     @Transactional(readOnly = true)
-    public Page<ProductModel> getProducts(ProductSortType sortType, Pageable pageable) {
+    public Page<ProductModel> getProducts(Long brandId, ProductSortType sortType, Pageable pageable) {
         Pageable sorted = PageRequest.of(pageable.getPageNumber(), pageable.getPageSize(), sortType.toSort());
+        if (brandId != null) {
+            return productRepository.findAllActiveByBrandId(brandId, sorted);
+        }
         return productRepository.findAllActive(sorted);
     }
 
