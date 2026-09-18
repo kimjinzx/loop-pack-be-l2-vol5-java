@@ -3,6 +3,8 @@ package com.loopers.infrastructure.like;
 import com.loopers.domain.like.LikeModel;
 import com.loopers.domain.like.LikeRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 
 import java.util.List;
@@ -23,6 +25,11 @@ public class LikeRepositoryImpl implements LikeRepository {
     @Override
     public Optional<LikeModel> findByUserIdAndProductId(Long userId, Long productId) {
         return likeJpaRepository.findByUserIdAndProductId(userId, productId);
+    }
+
+    @Override
+    public Page<LikeModel> findActiveByUserId(Long userId, Pageable pageable) {
+        return likeJpaRepository.findByUserIdAndDeletedAtIsNull(userId, pageable);
     }
 
     @Override

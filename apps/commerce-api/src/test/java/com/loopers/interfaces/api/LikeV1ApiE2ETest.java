@@ -1,6 +1,8 @@
 package com.loopers.interfaces.api;
 
+import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.infrastructure.brand.BrandJpaRepository;
 import com.loopers.infrastructure.product.ProductJpaRepository;
 import com.loopers.interfaces.api.product.ProductV1Dto;
 import com.loopers.utils.DatabaseCleanUp;
@@ -18,22 +20,27 @@ import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 
+import java.util.List;
+
 import static org.assertj.core.api.Assertions.assertThat;
 
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 class LikeV1ApiE2ETest {
 
     private final TestRestTemplate testRestTemplate;
+    private final BrandJpaRepository brandJpaRepository;
     private final ProductJpaRepository productJpaRepository;
     private final DatabaseCleanUp databaseCleanUp;
 
     @Autowired
     public LikeV1ApiE2ETest(
         TestRestTemplate testRestTemplate,
+        BrandJpaRepository brandJpaRepository,
         ProductJpaRepository productJpaRepository,
         DatabaseCleanUp databaseCleanUp
     ) {
         this.testRestTemplate = testRestTemplate;
+        this.brandJpaRepository = brandJpaRepository;
         this.productJpaRepository = productJpaRepository;
         this.databaseCleanUp = databaseCleanUp;
     }
@@ -49,6 +56,11 @@ class LikeV1ApiE2ETest {
         return new HttpEntity<>(headers);
     }
 
+    private ProductModel saveProduct() {
+        BrandModel brand = brandJpaRepository.save(new BrandModel("나이키"));
+        return productJpaRepository.save(new ProductModel(brand.getId(), "runner", 10_000L, 5));
+    }
+
     @DisplayName("POST, DELETE /api/v1/products/{productId}/likes")
     @Nested
     class LikeAndUnlike {
@@ -56,7 +68,7 @@ class LikeV1ApiE2ETest {
         @Test
         void reflectsLikeCount_whenLiked() {
             // arrange
-            ProductModel product = productJpaRepository.save(new ProductModel(1L, "runner", 10_000L, 5));
+            ProductModel product = saveProduct();
 
             // act
             ResponseEntity<ApiResponse<Object>> likeResponse = testRestTemplate.exchange(
@@ -72,7 +84,7 @@ class LikeV1ApiE2ETest {
         @Test
         void staysIdempotent_whenLikedTwice() {
             // arrange
-            ProductModel product = productJpaRepository.save(new ProductModel(1L, "runner", 10_000L, 5));
+            ProductModel product = saveProduct();
 
             // act
             testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
@@ -88,7 +100,7 @@ class LikeV1ApiE2ETest {
         @Test
         void reflectsLikeCount_whenUnliked() {
             // arrange
-            ProductModel product = productJpaRepository.save(new ProductModel(1L, "runner", 10_000L, 5));
+            ProductModel product = saveProduct();
             testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
                 HttpMethod.POST, withUser(1L), Void.class);
 
@@ -118,7 +130,7 @@ class LikeV1ApiE2ETest {
         @Test
         void returns400_whenUserIdHeaderIsMissing() {
             // arrange
-            ProductModel product = productJpaRepository.save(new ProductModel(1L, "runner", 10_000L, 5));
+            ProductModel product = saveProduct();
 
             // act
             ResponseEntity<ApiResponse<Object>> response = testRestTemplate.exchange(
@@ -127,6 +139,64 @@ class LikeV1ApiE2ETest {
 
             // assert
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
+    }
+
+    @DisplayName("GET /api/v1/likes")
+    @Nested
+    class MyLikedProducts {
+        @DisplayName("좋아요한 상품이 있으면, 목록에 포함된다.")
+        @Test
+        void includesProduct_whenLiked() {
+            // arrange
+            ProductModel product = saveProduct();
+            testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
+                HttpMethod.POST, withUser(1L), Void.class);
+
+            // act
+            ResponseEntity<ApiResponse<List<ProductV1Dto.ProductResponse>>> response = testRestTemplate.exchange(
+                "/api/v1/likes", HttpMethod.GET, withUser(1L), new ParameterizedTypeReference<>() {});
+
+            // assert
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
+            assertThat(response.getBody().data()).hasSize(1);
+            assertThat(response.getBody().data().get(0).id()).isEqualTo(product.getId());
+        }
+
+        @DisplayName("좋아요를 취소한 상품은, 목록에서 제외된다.")
+        @Test
+        void excludesProduct_whenUnliked() {
+            // arrange
+            ProductModel product = saveProduct();
+            testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
+                HttpMethod.POST, withUser(1L), Void.class);
+            testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
+                HttpMethod.DELETE, withUser(1L), Void.class);
+
+            // act
+            ResponseEntity<ApiResponse<List<ProductV1Dto.ProductResponse>>> response = testRestTemplate.exchange(
+                "/api/v1/likes", HttpMethod.GET, withUser(1L), new ParameterizedTypeReference<>() {});
+
+            // assert
+            assertThat(response.getBody().data()).isEmpty();
+        }
+
+        @DisplayName("좋아요한 상품이 삭제되면, 목록에서 제외된다.")
+        @Test
+        void excludesProduct_whenProductIsDeleted() {
+            // arrange
+            ProductModel product = saveProduct();
+            testRestTemplate.exchange("/api/v1/products/" + product.getId() + "/likes",
+                HttpMethod.POST, withUser(1L), Void.class);
+            product.delete();
+            productJpaRepository.save(product);
+
+            // act
+            ResponseEntity<ApiResponse<List<ProductV1Dto.ProductResponse>>> response = testRestTemplate.exchange(
+                "/api/v1/likes", HttpMethod.GET, withUser(1L), new ParameterizedTypeReference<>() {});
+
+            // assert
+            assertThat(response.getBody().data()).isEmpty();
         }
     }
 

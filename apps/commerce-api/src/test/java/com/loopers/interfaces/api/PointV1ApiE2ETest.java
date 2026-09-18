@@ -103,5 +103,21 @@ class PointV1ApiE2ETest {
             // assert
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
         }
+
+        @DisplayName("충전 후 잔액이 10억을 넘으면, 400을 응답한다.")
+        @Test
+        void returns400_whenBalanceExceedsMaximum() {
+            // arrange
+            testRestTemplate.exchange("/api/v1/points/charge", HttpMethod.POST,
+                withUser(1L, new PointV1Dto.ChargeRequest(999_999_999L)), Void.class);
+
+            // act
+            ParameterizedTypeReference<ApiResponse<PointV1Dto.PointResponse>> responseType = new ParameterizedTypeReference<>() {};
+            ResponseEntity<ApiResponse<PointV1Dto.PointResponse>> response = testRestTemplate.exchange(
+                "/api/v1/points/charge", HttpMethod.POST, withUser(1L, new PointV1Dto.ChargeRequest(2L)), responseType);
+
+            // assert
+            assertThat(response.getStatusCode()).isEqualTo(HttpStatus.BAD_REQUEST);
+        }
     }
 }

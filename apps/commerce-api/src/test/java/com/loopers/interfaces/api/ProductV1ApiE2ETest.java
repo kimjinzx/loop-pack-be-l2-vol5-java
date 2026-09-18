@@ -1,6 +1,8 @@
 package com.loopers.interfaces.api;
 
+import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.infrastructure.brand.BrandJpaRepository;
 import com.loopers.infrastructure.product.ProductJpaRepository;
 import com.loopers.interfaces.api.product.ProductV1Dto;
 import com.loopers.utils.DatabaseCleanUp;
@@ -23,16 +25,19 @@ import static org.assertj.core.api.Assertions.assertThat;
 class ProductV1ApiE2ETest {
 
     private final TestRestTemplate testRestTemplate;
+    private final BrandJpaRepository brandJpaRepository;
     private final ProductJpaRepository productJpaRepository;
     private final DatabaseCleanUp databaseCleanUp;
 
     @Autowired
     public ProductV1ApiE2ETest(
         TestRestTemplate testRestTemplate,
+        BrandJpaRepository brandJpaRepository,
         ProductJpaRepository productJpaRepository,
         DatabaseCleanUp databaseCleanUp
     ) {
         this.testRestTemplate = testRestTemplate;
+        this.brandJpaRepository = brandJpaRepository;
         this.productJpaRepository = productJpaRepository;
         this.databaseCleanUp = databaseCleanUp;
     }
@@ -45,11 +50,12 @@ class ProductV1ApiE2ETest {
     @DisplayName("GET /api/v1/products/{productId}")
     @Nested
     class Get {
-        @DisplayName("존재하며 삭제되지 않은 상품 id를 주면, 상품 정보를 반환한다.")
+        @DisplayName("존재하며 삭제되지 않은 상품 id를 주면, 상품 정보와 브랜드명을 반환한다.")
         @Test
         void returnsProduct_whenActiveIdIsProvided() {
             // arrange
-            ProductModel product = productJpaRepository.save(new ProductModel(1L, "runner", 10_000L, 5));
+            BrandModel brand = brandJpaRepository.save(new BrandModel("나이키"));
+            ProductModel product = productJpaRepository.save(new ProductModel(brand.getId(), "runner", 10_000L, 5));
 
             // act
             ParameterizedTypeReference<ApiResponse<ProductV1Dto.ProductResponse>> responseType = new ParameterizedTypeReference<>() {};
@@ -59,6 +65,7 @@ class ProductV1ApiE2ETest {
             // assert
             assertThat(response.getStatusCode()).isEqualTo(HttpStatus.OK);
             assertThat(response.getBody().data().name()).isEqualTo("runner");
+            assertThat(response.getBody().data().brandName()).isEqualTo("나이키");
         }
 
         @DisplayName("존재하지 않는 상품 id를 주면, 404를 응답한다.")
@@ -81,8 +88,9 @@ class ProductV1ApiE2ETest {
         @Test
         void returnsProductsSortedByPriceAsc_whenSortIsPriceAsc() {
             // arrange
-            productJpaRepository.save(new ProductModel(1L, "expensive", 30_000L, 5));
-            productJpaRepository.save(new ProductModel(1L, "cheap", 10_000L, 5));
+            BrandModel brand = brandJpaRepository.save(new BrandModel("나이키"));
+            productJpaRepository.save(new ProductModel(brand.getId(), "expensive", 30_000L, 5));
+            productJpaRepository.save(new ProductModel(brand.getId(), "cheap", 10_000L, 5));
 
             // act
             ParameterizedTypeReference<ApiResponse<java.util.List<ProductV1Dto.ProductResponse>>> responseType =

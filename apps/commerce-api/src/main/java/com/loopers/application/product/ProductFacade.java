@@ -1,5 +1,6 @@
 package com.loopers.application.product;
 
+import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
 import com.loopers.domain.product.ProductModel;
@@ -12,6 +13,7 @@ import org.springframework.stereotype.Component;
 
 import java.util.List;
 import java.util.Map;
+import java.util.function.Function;
 
 @RequiredArgsConstructor
 @Component
@@ -22,8 +24,9 @@ public class ProductFacade {
 
     public ProductInfo getProduct(Long id) {
         ProductModel product = productService.getProduct(id);
+        BrandModel brand = brandService.getBrand(product.getBrandId());
         long likeCount = likeService.countActiveByProduct(id);
-        return ProductInfo.from(product, likeCount);
+        return ProductInfo.from(product, brand.getName(), likeCount);
     }
 
     public ProductAdminInfo getProductForAdmin(Long id) {
@@ -33,13 +36,28 @@ public class ProductFacade {
 
     public Page<ProductInfo> getProducts(ProductSortType sortType, Pageable pageable) {
         Page<ProductModel> products = productService.getProducts(sortType, pageable);
-        List<Long> productIds = products.getContent().stream().map(ProductModel::getId).toList();
-        Map<Long, Long> likeCounts = likeService.countActiveByProducts(productIds);
-        return products.map(product -> ProductInfo.from(product, likeCounts.getOrDefault(product.getId(), 0L)));
+        return products.map(toProductInfo(products.getContent()));
     }
 
     public Page<ProductAdminInfo> getProductsForAdmin(Pageable pageable) {
         return productService.getProductsForAdmin(pageable).map(ProductAdminInfo::from);
+    }
+
+    public List<ProductInfo> getProductsByIds(List<Long> productIds) {
+        List<ProductModel> products = productService.getActiveProducts(productIds);
+        return products.stream().map(toProductInfo(products)).toList();
+    }
+
+    private Function<ProductModel, ProductInfo> toProductInfo(List<ProductModel> products) {
+        List<Long> productIds = products.stream().map(ProductModel::getId).toList();
+        List<Long> brandIds = products.stream().map(ProductModel::getBrandId).distinct().toList();
+        Map<Long, Long> likeCounts = likeService.countActiveByProducts(productIds);
+        Map<Long, BrandModel> brands = brandService.getBrandsByIds(brandIds);
+        return product -> ProductInfo.from(
+            product,
+            brands.get(product.getBrandId()).getName(),
+            likeCounts.getOrDefault(product.getId(), 0L)
+        );
     }
 
     public ProductAdminInfo createProduct(Long brandId, String name, Long price, int stock) {

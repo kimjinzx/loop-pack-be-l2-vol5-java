@@ -1,5 +1,7 @@
 package com.loopers.domain.point;
 
+import com.loopers.support.error.CoreException;
+import com.loopers.support.error.ErrorType;
 import com.loopers.utils.DatabaseCleanUp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
@@ -9,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 
 @SpringBootTest
 class PointServiceIntegrationTest {
@@ -63,6 +66,33 @@ class PointServiceIntegrationTest {
 
             // assert
             assertThat(result).isEqualTo(3_000L);
+        }
+    }
+
+    @DisplayName("포인트를 사용할 때, ")
+    @Nested
+    class Pay {
+        @DisplayName("잔액 이하의 금액이면, 잔액에서 차감된다.")
+        @Test
+        void decreasesBalance_whenAmountIsWithinBalance() {
+            // arrange
+            pointService.charge(1L, 1_000L);
+
+            // act
+            pointService.pay(1L, 700L);
+
+            // assert
+            assertThat(pointService.getBalance(1L)).isEqualTo(300L);
+        }
+
+        @DisplayName("한 번도 충전한 적 없는 사용자가 사용을 요청하면, CONFLICT 예외가 발생한다.")
+        @Test
+        void throwsConflictException_whenNeverCharged() {
+            // act
+            CoreException result = assertThrows(CoreException.class, () -> pointService.pay(1L, 100L));
+
+            // assert
+            assertThat(result.getErrorType()).isEqualTo(ErrorType.CONFLICT);
         }
     }
 }

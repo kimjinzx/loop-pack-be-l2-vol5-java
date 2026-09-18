@@ -9,6 +9,8 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.util.List;
+
 @RequiredArgsConstructor
 @Component
 public class ProductService {
@@ -36,6 +38,14 @@ public class ProductService {
     @Transactional(readOnly = true)
     public Page<ProductModel> getProductsForAdmin(Pageable pageable) {
         return productRepository.findAll(pageable);
+    }
+
+    @Transactional(readOnly = true)
+    public List<ProductModel> getActiveProducts(List<Long> ids) {
+        if (ids.isEmpty()) {
+            return List.of();
+        }
+        return productRepository.findAllActiveByIds(ids);
     }
 
     @Transactional(readOnly = true)

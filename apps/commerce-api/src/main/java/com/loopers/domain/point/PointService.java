@@ -24,4 +24,12 @@ public class PointService {
         point.charge(amount);
         return pointRepository.save(point).getBalance();
     }
+
+    @Transactional
+    public void pay(Long userId, Long amount) {
+        PointModel point = pointRepository.findByUserId(userId)
+            .orElseGet(() -> new PointModel(userId));
+        point.pay(amount);
+        pointRepository.save(point);
+    }
 }

@@ -81,5 +81,66 @@ class PointModelTest {
             assertThat(negativeResult.getErrorType()).isEqualTo(ErrorType.BAD_REQUEST);
             assertThat(point.getBalance()).isEqualTo(0L);
         }
+
+        @DisplayName("충전 후 잔액이 10억을 넘으면, BAD_REQUEST 예외가 발생하고 잔액이 유지된다.")
+        @Test
+        void throwsBadRequestException_whenBalanceExceedsMaximum() {
+            // arrange
+            PointModel point = new PointModel(1L);
+            point.charge(999_999_999L);
+
+            // act
+            CoreException result = assertThrows(CoreException.class, () -> point.charge(2L));
+
+            // assert
+            assertThat(result.getErrorType()).isEqualTo(ErrorType.BAD_REQUEST);
+            assertThat(point.getBalance()).isEqualTo(999_999_999L);
+        }
+    }
+
+    @DisplayName("포인트를 사용할 때, ")
+    @Nested
+    class Pay {
+        @DisplayName("잔액 이하의 금액이면, 잔액에서 차감된다.")
+        @Test
+        void decreasesBalance_whenAmountIsWithinBalance() {
+            // arrange
+            PointModel point = new PointModel(1L);
+            point.charge(1_000L);
+
+            // act
+            point.pay(700L);
+
+            // assert
+            assertThat(point.getBalance()).isEqualTo(300L);
+        }
+
+        @DisplayName("잔액보다 많은 금액이면, CONFLICT 예외가 발생하고 잔액이 유지된다.")
+        @Test
+        void throwsConflictException_whenAmountExceedsBalance() {
+            // arrange
+            PointModel point = new PointModel(1L);
+            point.charge(1_000L);
+
+            // act
+            CoreException result = assertThrows(CoreException.class, () -> point.pay(1_001L));
+
+            // assert
+            assertThat(result.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+            assertThat(point.getBalance()).isEqualTo(1_000L);
+        }
+
+        @DisplayName("0 이하의 금액이면, BAD_REQUEST 예외가 발생한다.")
+        @Test
+        void throwsBadRequestException_whenAmountIsNotPositive() {
+            // arrange
+            PointModel point = new PointModel(1L);
+
+            // act
+            CoreException result = assertThrows(CoreException.class, () -> point.pay(0L));
+
+            // assert
+            assertThat(result.getErrorType()).isEqualTo(ErrorType.BAD_REQUEST);
+        }
     }
 }

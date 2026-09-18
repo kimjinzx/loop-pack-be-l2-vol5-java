@@ -1,6 +1,8 @@
 package com.loopers.domain.like;
 
 import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,6 +27,11 @@ public class LikeService {
     public void unlike(Long userId, Long productId) {
         likeRepository.findByUserIdAndProductId(userId, productId)
             .ifPresent(LikeModel::delete);
+    }
+
+    @Transactional(readOnly = true)
+    public Page<LikeModel> getLikesByUser(Long userId, Pageable pageable) {
+        return likeRepository.findActiveByUserId(userId, pageable);
     }
 
     @Transactional(readOnly = true)

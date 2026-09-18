@@ -12,6 +12,8 @@ import jakarta.persistence.UniqueConstraint;
 @Table(name = "user_point", uniqueConstraints = @UniqueConstraint(columnNames = {"user_id"}))
 public class PointModel extends BaseEntity {
 
+    private static final long MAX_BALANCE = 1_000_000_000L;
+
     @Column(name = "user_id", nullable = false, updatable = false)
     private Long userId;
 
@@ -33,7 +35,20 @@ public class PointModel extends BaseEntity {
         if (amount == null || amount <= 0) {
             throw new CoreException(ErrorType.BAD_REQUEST, "충전 금액은 0보다 커야 합니다.");
         }
+        if (this.balance + amount > MAX_BALANCE) {
+            throw new CoreException(ErrorType.BAD_REQUEST, "충전 후 잔액은 " + MAX_BALANCE + "을 넘을 수 없습니다.");
+        }
         this.balance += amount;
+    }
+
+    public void pay(Long amount) {
+        if (amount == null || amount <= 0) {
+            throw new CoreException(ErrorType.BAD_REQUEST, "결제 금액은 0보다 커야 합니다.");
+        }
+        if (this.balance < amount) {
+            throw new CoreException(ErrorType.CONFLICT, "포인트 잔액이 부족합니다.");
+        }
+        this.balance -= amount;
     }
 
     public Long getUserId() {
