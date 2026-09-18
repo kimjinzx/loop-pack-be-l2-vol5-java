@@ -3,13 +3,13 @@ package com.loopers.interfaces.api.order;
 import com.loopers.application.order.OrderFacade;
 import com.loopers.application.order.OrderItemCommand;
 import com.loopers.interfaces.api.ApiResponse;
+import com.loopers.interfaces.api.auth.LoginUserId;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
@@ -23,10 +23,9 @@ public class OrderV1Controller {
 
     private final OrderFacade orderFacade;
 
-    // TODO: 사용자 식별 공통 처리 도입 후 X-USER-ID 헤더 직접 파싱을 공통 리졸버로 대체
     @PostMapping
     public ApiResponse<OrderV1Dto.OrderResponse> createOrder(
-        @RequestHeader("X-USER-ID") Long userId,
+        @LoginUserId Long userId,
         @RequestBody OrderV1Dto.CreateRequest request
     ) {
         List<OrderItemCommand> items = request.items().stream()
@@ -39,7 +38,7 @@ public class OrderV1Controller {
     @PostMapping("/{orderId}/confirm")
     public ApiResponse<OrderV1Dto.OrderResponse> confirmOrder(
         @PathVariable Long orderId,
-        @RequestHeader("X-USER-ID") Long userId
+        @LoginUserId Long userId
     ) {
         var info = orderFacade.confirmOrder(orderId, userId);
         return ApiResponse.success(OrderV1Dto.OrderResponse.from(info));
@@ -47,7 +46,7 @@ public class OrderV1Controller {
 
     @GetMapping
     public ApiResponse<List<OrderV1Dto.OrderResponse>> getOrders(
-        @RequestHeader("X-USER-ID") Long userId,
+        @LoginUserId Long userId,
         @RequestParam(defaultValue = "0") int page,
         @RequestParam(defaultValue = "20") int size
     ) {
@@ -58,7 +57,7 @@ public class OrderV1Controller {
     @GetMapping("/{orderId}")
     public ApiResponse<OrderV1Dto.OrderResponse> getOrder(
         @PathVariable Long orderId,
-        @RequestHeader("X-USER-ID") Long userId
+        @LoginUserId Long userId
     ) {
         var info = orderFacade.getOrder(orderId, userId);
         return ApiResponse.success(OrderV1Dto.OrderResponse.from(info));
