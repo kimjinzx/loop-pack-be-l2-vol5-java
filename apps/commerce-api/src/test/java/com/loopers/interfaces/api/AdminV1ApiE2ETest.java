@@ -2,8 +2,11 @@ package com.loopers.interfaces.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.domain.brand.BrandModel;
+import com.loopers.domain.order.OrderItem;
+import com.loopers.domain.order.OrderModel;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.infrastructure.brand.BrandJpaRepository;
+import com.loopers.infrastructure.order.OrderJpaRepository;
 import com.loopers.infrastructure.product.ProductJpaRepository;
 import com.loopers.utils.DatabaseCleanUp;
 import org.junit.jupiter.api.AfterEach;
@@ -16,6 +19,7 @@ import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
 import org.springframework.test.web.servlet.MockMvc;
 
+import java.util.List;
 import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +48,9 @@ class AdminV1ApiE2ETest {
 
     @Autowired
     private ProductJpaRepository productJpaRepository;
+
+    @Autowired
+    private OrderJpaRepository orderJpaRepository;
 
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
@@ -201,6 +208,40 @@ class AdminV1ApiE2ETest {
         @Test
         void returns403_whenRequestedByUnauthenticatedUser() throws Exception {
             mvc.perform(get("/api-admin/v1/products"))
+                .andExpect(status().isForbidden());
+        }
+    }
+
+    @DisplayName("관리자 주문 API는, ")
+    @Nested
+    class Orders {
+        @DisplayName("관리자가 요청하면, 구매자와 무관하게 주문 목록과 상세를 조회할 수 있다.")
+        @Test
+        void allowsViewingAnyOrder_whenRequestedByAdmin() throws Exception {
+            // arrange
+            OrderModel order = orderJpaRepository.save(new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L))));
+
+            // act, assert
+            mvc.perform(get("/api-admin/v1/orders").with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data[0].userId").value(1));
+
+            mvc.perform(get("/api-admin/v1/orders/" + order.getId()).with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.totalAmount").value(20_000));
+        }
+
+        @DisplayName("일반 사용자가 요청하면, 403을 응답한다.")
+        @Test
+        void returns403_whenRequestedByNonAdminUser() throws Exception {
+            mvc.perform(get("/api-admin/v1/orders").with(user("customer").roles("USER")))
+                .andExpect(status().isForbidden());
+        }
+
+        @DisplayName("식별되지 않은 사용자가 요청하면, 403을 응답한다.")
+        @Test
+        void returns403_whenRequestedByUnauthenticatedUser() throws Exception {
+            mvc.perform(get("/api-admin/v1/orders"))
                 .andExpect(status().isForbidden());
         }
     }

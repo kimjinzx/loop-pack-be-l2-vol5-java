@@ -77,4 +77,10 @@ public class ProductService {
         ProductModel product = getProductForAdmin(id);
         product.delete();
     }
+
+    @Transactional
+    public void decreaseStock(Long id, int quantity) {
+        ProductModel product = getProduct(id);
+        product.decreaseStock(quantity);
+    }
 }
