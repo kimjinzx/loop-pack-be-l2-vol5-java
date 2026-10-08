@@ -58,14 +58,14 @@ public class ProductService {
 
     @Transactional
     public ProductModel updateProduct(Long id, String name, Long price) {
-        ProductModel product = getProductForAdmin(id);
+        ProductModel product = getProduct(id);
         product.updateNameAndPrice(name, price);
         return product;
     }
 
     @Transactional
     public ProductModel changeStock(Long id, int quantity) {
-        ProductModel product = getProductForAdmin(id);
+        ProductModel product = getProduct(id);
         product.changeStock(quantity);
         return product;
     }

@@ -235,6 +235,44 @@ class AdminV1ApiE2ETest {
             assertThat(deleted.getDeletedAt()).isNotNull();
         }
 
+        @DisplayName("삭제된 상품의 정보를 수정하면, 404를 응답하고 값은 그대로다.")
+        @Test
+        void returns404_whenUpdatingDeletedProduct() throws Exception {
+            // arrange
+            ProductModel product = saveDeletedProduct();
+            String updateBody = objectMapper.writeValueAsString(Map.of("name", "runner-pro", "price", 20_000));
+
+            // act
+            mvc.perform(put("/api-admin/v1/products/" + product.getId())
+                    .with(user("admin").roles("ADMIN"))
+                    .with(csrf())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(updateBody))
+                .andExpect(status().isNotFound());
+
+            // assert
+            assertThat(productJpaRepository.findById(product.getId()).orElseThrow().getName()).isEqualTo("runner");
+        }
+
+        @DisplayName("삭제된 상품의 재고를 변경하면, 404를 응답하고 재고는 그대로다.")
+        @Test
+        void returns404_whenChangingStockOfDeletedProduct() throws Exception {
+            // arrange
+            ProductModel product = saveDeletedProduct();
+            String stockBody = objectMapper.writeValueAsString(Map.of("stock", 100));
+
+            // act
+            mvc.perform(patch("/api-admin/v1/products/" + product.getId() + "/stock")
+                    .with(user("admin").roles("ADMIN"))
+                    .with(csrf())
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content(stockBody))
+                .andExpect(status().isNotFound());
+
+            // assert
+            assertThat(productJpaRepository.findById(product.getId()).orElseThrow().getStock()).isEqualTo(5);
+        }
+
         @DisplayName("존재하지 않는 브랜드로 생성을 요청하면, 404를 응답한다.")
         @Test
         void returns404_whenBrandDoesNotExist() throws Exception {
@@ -263,6 +301,13 @@ class AdminV1ApiE2ETest {
         void returns403_whenRequestedByUnauthenticatedUser() throws Exception {
             mvc.perform(get("/api-admin/v1/products"))
                 .andExpect(status().isForbidden());
+        }
+
+        private ProductModel saveDeletedProduct() {
+            BrandModel brand = brandJpaRepository.save(new BrandModel("나이키"));
+            ProductModel product = new ProductModel(brand.getId(), "runner", 10_000L, 5);
+            product.delete();
+            return productJpaRepository.save(product);
         }
     }
 
