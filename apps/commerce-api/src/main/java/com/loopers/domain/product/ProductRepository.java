@@ -19,6 +19,9 @@ public interface ProductRepository {
 
     Page<ProductModel> findAllActiveByBrandId(Long brandId, Pageable pageable);
 
+    // id 오름차순
+    List<ProductModel> findAllActiveByBrandId(Long brandId);
+
     List<ProductModel> findAllActiveByIds(List<Long> ids);
 
     boolean existsActiveByBrandId(Long brandId);

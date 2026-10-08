@@ -51,11 +51,6 @@ public class ProductService {
         return productRepository.findAllActiveByIds(ids);
     }
 
-    @Transactional(readOnly = true)
-    public boolean hasActiveProductsByBrand(Long brandId) {
-        return productRepository.existsActiveByBrandId(brandId);
-    }
-
     @Transactional
     public ProductModel createProduct(Long brandId, String name, Long price, int stock) {
         return productRepository.save(new ProductModel(brandId, name, price, stock));
@@ -79,6 +74,11 @@ public class ProductService {
     public void deleteProduct(Long id) {
         ProductModel product = getProductForAdmin(id);
         product.delete();
+    }
+
+    @Transactional
+    public void deleteAllActiveByBrand(Long brandId) {
+        productRepository.findAllActiveByBrandId(brandId).forEach(ProductModel::delete);
     }
 
     @Transactional

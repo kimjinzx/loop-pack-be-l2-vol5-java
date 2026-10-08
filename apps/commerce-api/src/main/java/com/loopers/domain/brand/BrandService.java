@@ -58,5 +58,6 @@ public class BrandService {
     public void deleteBrand(Long id) {
         BrandModel brand = getBrandForAdmin(id);
         brand.delete();
+        brandRepository.save(brand);
     }
 }
