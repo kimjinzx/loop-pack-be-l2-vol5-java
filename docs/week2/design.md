@@ -143,10 +143,10 @@ Controller.deleteBrand
 ```
 Controller.deleteBrand(brandId)
  → [프록시] BrandFacade.deleteBrand(brandId)            ◀ @Transactional — 시작·종료 지점
-     ① ProductService.deleteAllActiveByBrand(brandId)   (같은 트랜잭션에 참여)
-          브랜드의 미삭제 상품 전체 조회(재고 0 포함) → 각 상품 삭제 처리
-     ② BrandService.deleteBrand(brandId)                (같은 트랜잭션에 참여)
-          브랜드 조회(없으면 NOT_FOUND) → 삭제 처리
+     ① BrandService.getBrandForUpdate(brandId)          브랜드 잠금 조회 (없으면 NOT_FOUND)
+     ② ProductService.deleteAllActiveByBrand(brandId)   미삭제 상품 id를 오름차순으로 읽고(재고 0 포함),
+                                                        하나씩 잠금 조회해 삭제 여부를 다시 확인한 뒤 삭제 처리
+     ③ BrandService.deleteBrand(brandId)                브랜드 삭제 처리·저장 (이미 잠근 행)
  ← 정상: 한 번에 commit — 브랜드와 모든 상품의 삭제 시각이 함께 반영
  ← 예외: 어느 단계에서든 RuntimeException(CoreException 포함)이 Facade 밖으로 나오면 rollback
 ```
@@ -163,7 +163,7 @@ Controller.deleteBrand(brandId)
 | Controller → `BrandFacade.deleteBrand` | 예 | `@Transactional`이 붙은 Facade가 프록시 빈이라 트랜잭션은 여기서 시작 |
 | `BrandFacade` → `ProductService.deleteAllActiveByBrand` | 예 | 이미 열린 트랜잭션이 있어 새로 열지 않고 참여 (기본 전파 규칙) |
 | `BrandFacade` → `BrandService.deleteBrand` | 예 | 위와 동일 |
-| `BrandService.deleteBrand` → `getBrandForAdmin` | 아니오 (같은 객체 안 호출) | 프록시를 거치지 않아 `readOnly=true`가 적용되지 않지만, 이미 열린 쓰기 트랜잭션 안이라 영향 없음 |
+| `BrandService.deleteBrand` → `getBrandForUpdate` | 아니오 (같은 객체 안 호출) | 프록시를 거치지 않지만 이미 열린 쓰기 트랜잭션 안이라 잠금 조회에 문제 없음. 같은 트랜잭션이라 이미 잠근 행을 한 번 더 조회한다 |
 
 **롤백 범위**
 
@@ -197,10 +197,10 @@ Controller.deleteBrand(brandId)
 
 **검증 시 유의점**: `delete()`는 필드만 바꾸고 UPDATE는 flush 시점에 나간다. 중간 실패 테스트가 "변경 SQL이 나간 뒤" 실패를 만들려면 실패 주입 위치(브랜드 저장 단계)보다 먼저 flush가 일어나야 하므로, 주입 위치와 flush 시점을 함께 정한다.
 
-**기존 계약 변경의 영향**
-- "연결된 미삭제 상품이 있으면 409" 계약을 폐기한다. `AdminV1ApiE2ETest`의 `returns409_whenBrandHasActiveProduct`가 옛 계약을 검증하므로, 구현 단계에서 새 계약(함께 삭제)에 맞게 기대값을 바꾼다. 정책 변경이므로 변경 사유를 남기고 확인을 받은 뒤 진행한다.
-- `ProductService.hasActiveProductsByBrand`는 `BrandFacade`만 쓰고 있어 이 흐름에서 쓰이지 않게 된다. `ProductRepository.existsActiveByBrandId`는 `ProductRepositoryTest`가 직접 검증하고 있으므로, 제거 여부는 구현 단계에서 판단한다.
-- 새 repository 약속이 필요하다: 브랜드의 미삭제 상품 전체 조회 (현재는 페이징 조회와 존재 확인만 있음).
+**기존 계약 변경의 영향 (처리 결과)**
+- "연결된 미삭제 상품이 있으면 409" 계약은 폐기했고, `AdminV1ApiE2ETest`의 옛 계약 테스트는 새 계약(함께 삭제)을 검증하도록 바꿨다.
+- `ProductService.hasActiveProductsByBrand`는 제거했다. `ProductRepository.existsActiveByBrandId`는 `ProductRepositoryTest`가 직접 검증하고 있어 남겼다.
+- 새 repository 약속은 브랜드의 미삭제 상품 **id 목록**을 id 오름차순으로 읽는 `findActiveIdsByBrandId`다. 엔티티를 읽으면 잠금 없이 로드되어 뒤의 잠금 조회로 상태가 갱신되지 않으므로 id만 읽는다 (7-4절 반례 7).
 
 ### 7-2. 최초 주문 확정 — `POST /api/v1/orders/{orderId}/confirm`
 
@@ -242,7 +242,7 @@ Controller.confirmOrder(orderId, userId)
 |---|---|---|
 | Controller → `OrderFacade.confirmOrder` | 예 | 트랜잭션은 여기서 시작 |
 | `OrderFacade` → `OrderService`·`ProductService`·`PointService` | 예 | 이미 열린 트랜잭션에 참여 |
-| `ProductService.decreaseStock` → `getProduct` | 아니오 (같은 객체 안 호출) | 이미 열린 쓰기 트랜잭션 안이라 영향 없음 |
+| `ProductService.decreaseStock` → `getActiveProductForUpdate` | 아니오 (같은 객체 안 호출) | 이미 열린 쓰기 트랜잭션 안이라 잠금 조회에 문제 없음 |
 
 **실패 종류와 현재 응답**
 
@@ -263,7 +263,7 @@ Controller.confirmOrder(orderId, userId)
 | 실패 시 원상태로 돌아가는 것 | 이번 확정에서 차감한 모든 상품의 재고, 포인트 잔액, 주문 상태(DRAFT 유지)와 결제액(없음) |
 | 이 흐름이 바꾸지 않는 것 | 다른 주문, 품목에 없는 상품, 다른 사용자의 잔액 |
 
-**기존 테스트의 한계**: `OrderV1ApiE2ETest`의 재고 부족(400)·잔액 부족(409) 테스트는 실패 뒤 재고·잔액이 그대로인지 확인하지만, 실패가 도메인 규칙 검사에서 일어난다. 변경 감지는 UPDATE를 flush 때 내보내므로 그 시점에 변경 SQL이 실제로 나갔는지는 보장되지 않는다. DB rollback의 증거로 쓰려면 변경 SQL이 나간 뒤에 실패를 일으키는 테스트가 따로 필요하다.
+**기존 테스트의 한계와 보완**: `OrderV1ApiE2ETest`의 재고 부족(400)·잔액 부족(409) 테스트는 실패 뒤 재고·잔액이 그대로인지 확인하지만, 실패가 도메인 규칙 검사에서 일어난다. 변경 감지는 UPDATE를 flush 때 내보내므로 그 시점에 변경 SQL이 실제로 나갔는지는 보장되지 않는다. 그래서 `OrderTransactionTest`가 재고·포인트 변경을 flush한 뒤 주문 저장 단계에서 실패시키고, 요청이 끝난 뒤 새로 조회해 전부 원래대로인지 확인한다. 결제만 `REQUIRES_NEW`로 바꿔 보면 이 테스트가 `expected: 100000 but was: 75000`으로 실패한다.
 
 **계약 결정 — 이미 CONFIRMED인 주문의 재확정**: 현재 동작인 **404(NOT_FOUND)를 유지**한다. 순차 재요청은 지금도 `getDraftOrderOwnedBy`의 DRAFT 필터에서 404가 되므로 계약이 바뀌지 않는다. 동시에 같은 주문을 확정하는 요청도 **잠금을 잡은 뒤 DRAFT 여부를 다시 확인**(구현 요건)하면 늦게 온 요청이 같은 404가 된다. `OrderModel.confirm`이 던지는 CONFLICT는 모델 내부의 마지막 방어선으로 남긴다. (버린 대안: 409로 통일 — 순차 재요청의 응답이 404에서 409로 바뀌어 기존 계약이 달라진다)
 
@@ -280,9 +280,9 @@ Controller.confirmOrder(orderId, userId)
 | 주문 확정 — 상태 | `orders`(id) | 주문 조회(본인·DRAFT) → `OrderModel.confirm` → 변경 감지 UPDATE |
 | 브랜드 일괄 삭제 (7-1절) | `product`(id) 여러 행 | 상품 조회 → `delete()` → 변경 감지 UPDATE |
 
-정확한 SQL 문장은 구현 단계에서 SQL 로그로 확인해 이 표에 반영한다.
+위 표는 잠금 도입 전의 동작이다. 도입 뒤 실제로 나가는 잠금 SQL은 아래 "경로별 적용과 잠금 순서"에 있다.
 
-**현재 보호 장치는 없다.** `@Lock`·`@Version`·조건부 UPDATE가 코드에 없고(검색으로 확인), 일반 SELECT는 행을 잠그지 않는다. 그래서 두 트랜잭션이 같은 값을 읽고 각자 새 값을 쓴다. 트랜잭션 경계도 경로마다 다르다. `OrderFacade.confirmOrder`만 Facade가 트랜잭션을 열고, `PointFacade.charge`·`ProductFacade.changeStock`은 서비스 메서드 하나가 자기 트랜잭션이다. 세션은 요청 전체로 이어지지 않는다(`open-in-view: false`).
+**잠금 도입 전에는 보호 장치가 없었다.** `@Lock`·`@Version`·조건부 UPDATE가 코드에 없고(검색으로 확인), 일반 SELECT는 행을 잠그지 않는다. 그래서 두 트랜잭션이 같은 값을 읽고 각자 새 값을 쓴다. 트랜잭션 경계도 경로마다 다르다. `OrderFacade.confirmOrder`만 Facade가 트랜잭션을 열고, `PointFacade.charge`·`ProductFacade.changeStock`은 서비스 메서드 하나가 자기 트랜잭션이다. 세션은 요청 전체로 이어지지 않는다(`open-in-view: false`).
 
 또한 Hibernate 기본 UPDATE는 바꾸지 않은 컬럼도 함께 쓴다(`ProductModel`·`PointModel`·`OrderModel` 모두 `@DynamicUpdate` 없음). 서로 다른 컬럼을 바꾸는 경로끼리도 덮어쓸 수 있다. 예를 들어 재고 차감이 읽어 둔 `deleted_at`(NULL)을 그대로 다시 쓰면, 그 사이 브랜드 삭제가 기록한 삭제 시각이 되살아날 수 있다.
 
@@ -310,7 +310,8 @@ Controller.confirmOrder(orderId, userId)
 | 버린 대안: 조건부 갱신 | 검사가 SQL(`stock >= ?`)로 옮겨가 `Stock.decrease`·`PointModel.pay` 규칙이 중복되거나 우회된다. 0행 갱신의 원인(부족·삭제·없음)을 따로 읽어 구분해야 하고, 벌크 UPDATE는 영속성 컨텍스트와 `updated_at` 갱신도 우회한다 |
 | 버린 대안: 낙관적·비관적 혼합 | 편집 경로는 한 요청 안(수 ms)에서 읽고 쓰므로 충돌이 드물어 비관적 잠금도 대기가 거의 없다. 이득 없이 version 컬럼, 충돌 응답 계약, 설명할 방식만 늘어난다 |
 | 비용 | 같은 행의 요청은 직렬화되고, 대기하는 동안 DB 커넥션을 잡으며, 잠금은 commit까지 유지된다. 처리량은 측정하지 않았다 |
-| 아직 확인하지 않은 한계 | 잠금 순서 위반 시의 교착과 잠금 대기 초과는 **기술 오류**로 따로 집계해야 한다. 테스트 환경의 실제 대기 시간 설정(`innodb_lock_wait_timeout`)과 교착 동작은 아직 확인하지 않았다 |
+| 확인한 것 | 잠금 순서를 어기면(품목 정렬을 빼면) 반대 순서 주문 테스트에서 MySQL 교착이 나고, 이 오류는 업무 거절이 아니라 **기술 오류**로 집계된다 |
+| 아직 확인하지 않은 한계 | 테스트 컨테이너의 실제 잠금 대기 시간 설정(`innodb_lock_wait_timeout`)은 확인하지 않았다. 처리량도 측정하지 않았다 |
 | 재검토 조건 | 인기 상품 한 행의 대기가 문제가 될 만큼 처리량 목표가 생기면, 먼저 트랜잭션 범위를 줄이고 그다음 조건부 갱신을 검토한다 |
 
 **적용 규칙**
@@ -337,14 +338,52 @@ Controller.confirmOrder(orderId, userId)
 - 주문 확정이 쓰는 자원 순서가 이미 주문 → 상품 → 포인트이고 현재 호출 순서도 같아서(주문 조회 → 재고 차감 → 포인트 결제 → 주문 상태 변경), 이 순서를 기준으로 삼으면 확정 경로의 변경이 가장 작다.
 - 나머지 경로는 이 순서의 부분집합이라 서로 반대 방향으로 잠그는 경로가 없고, 따라서 교착이 생기는 순환이 없다.
 - 같은 종류 안에서는 id 오름차순이다. 겹치는 상품을 사려는 두 확정, 확정과 브랜드 일괄 삭제가 같은 순서로 상품을 잠근다.
-- 상품은 **id를 오름차순으로 정렬한 뒤 하나씩** 잠금 조회한다. `IN (...) FOR UPDATE` 한 문장으로 묶으면 행을 잠그는 순서가 실행 계획에 달려 있어, 코드만으로는 순서를 보장했다고 말할 수 없다. 품목은 `createOrder`의 `HashMap` 저장 순서에 기대지 않고 확정할 때 정렬한다. 실제 잠금 순서는 구현 때 SQL 로그로 확인한다.
+- 상품은 **id를 오름차순으로 정렬한 뒤 하나씩** 잠금 조회한다. `IN (...) FOR UPDATE` 한 문장으로 묶으면 행을 잠그는 순서가 실행 계획에 달려 있어, 코드만으로는 순서를 보장했다고 말할 수 없다. 품목은 `createOrder`의 `HashMap` 저장 순서에 기대지 않고 확정할 때 정렬한다.
 - 브랜드 일괄 삭제는 브랜드를 잠근 뒤 미삭제 상품 id를 오름차순으로 조회하고, 하나씩 잠금 조회하며 삭제 여부를 다시 확인하고 `delete()`한다.
+
+**SQL 로그로 확인한 잠금 순서** (상품 2개짜리 주문 확정, 상품 2개 브랜드 삭제를 각각 한 번 실행한 `OrderTransactionTest`·`BrandRemovalTransactionTest` 로그):
+
+```
+주문 확정
+  select ... from orders  where id=? and user_id=? for update
+  select ... from product where id=? for update      (상품 1)
+  select ... from product where id=? for update      (상품 2)
+  select ... from user_point where user_id=? for update
+
+브랜드 일괄 삭제
+  select ... from brand   where id=? for update      (Facade)
+  select ... from product where id=? for update      (상품 1)
+  select ... from product where id=? for update      (상품 2)
+  select ... from brand   where id=? for update      (deleteBrand — 같은 트랜잭션이라 이미 잠근 행)
+```
+
+설계한 순서(주문 → 상품 id 오름차순 → 포인트, 브랜드 → 상품)와 같다. 로그에는 상품 id 값이 찍히지 않으므로 오름차순 자체는 로그가 아니라 아래 교착 테스트로 확인한다.
+
+**동시성 테스트 결과** (`OrderConcurrencyTest`, 실제 MySQL, 6건 통과)
+
+| 시나리오 | 확인한 것 |
+|---|---|
+| 재고 경쟁 | 재고 5에 DRAFT 8개 → 성공 5·재고 부족 3·기술 오류 0·최종 재고 0 |
+| 포인트 경쟁 | 잔액 10,000원에 4,000원 3개 → 성공 2·잔액 부족 1·기술 오류 0·최종 2,000원 |
+| 충전과 결제 | 둘 다 성공·최종 잔액 5,000원 |
+| 같은 주문 중복 확정 | 한 번만 반영, 나머지는 404 |
+| 관리자 재고 설정과 확정 | 최종 재고가 두 직렬 실행 결과 중 하나 |
+| 반대 순서 품목 | 같은 상품 두 개를 서로 반대 순서로 담은 주문들이 교착 없이 모두 성공 |
+
+**테스트가 보호 장치를 실제로 잡는지 확인한 변경 실험** (실험 뒤 모두 원복하고 검색으로 확인)
+
+| 변경 | 결과 |
+|---|---|
+| 상품 잠금 조회를 일반 조회로 되돌림 | 경쟁 테스트 6건 중 4건 실패 |
+| 포인트·주문 잠금 조회를 일반 조회로 되돌림 | 기대한 3건만 실패 |
+| 확정 때 품목 정렬을 뺌 | 반대 순서 테스트가 MySQL 교착으로 실패 (기술 오류로 집계됨) |
+| `PointService.pay`를 `REQUIRES_NEW`로 바꿈 | `OrderTransactionTest`만 실패 (`expected: 100000 but was: 75000`) |
 
 **범위 밖으로 둔 한계 (추가)**: 브랜드 일괄 삭제와 상품 등록의 동시 실행은 선택 확장이라 다루지 않는다. 삭제 중인 브랜드에 새 상품이 등록될 수 있다.
 
 ### 7-4. 반례 검토 (설계와 현재 코드의 대조)
 
-설계(7-1~7-3)와 현재 코드를 놓고 자기 호출·예외 삼키기·독립 commit·빠진 잠금 대상의 반례를 찾았다. 이 검토는 AI(Claude)가 코드를 읽고 검색한 **정적 대조**이며 실행으로 검증한 것이 아니다. 구현 뒤 변경 diff와 테스트로 다시 확인한다.
+설계(7-1~7-3)와 현재 코드를 놓고 자기 호출·예외 삼키기·독립 commit·빠진 잠금 대상의 반례를 찾았다. 아래 표는 구현 전에 AI(Claude)가 코드를 읽고 검색한 **정적 대조**다. 구현 뒤 diff·검색·테스트로 다시 확인한 결과는 표 아래 "구현 뒤 확인"에 적었다.
 
 | # | 분류 | 반례 | 코드에서 확인한 것 | 설계 대응 |
 |---|---|---|---|---|
@@ -357,6 +396,21 @@ Controller.confirmOrder(orderId, userId)
 | 7 | 빠진 잠금 대상 | 같은 트랜잭션에서 먼저 잠금 없이 로드한 엔티티는, 나중에 잠금 조회를 해도 상태가 갱신되지 않을 수 있다 (영속성 컨텍스트가 이미 가진 인스턴스를 쿼리 결과로 덮어쓰지 않는다) | 현재 `confirmOrder`는 `getDraftOrderOwnedBy`로 주문을 **가장 먼저, 잠금 없이** 읽는다 | 그 행을 트랜잭션에서 처음 로드하는 조회가 잠금 조회여야 한다. 7-3절 적용 규칙 1에 반영했고, 확정 흐름의 ①을 "주문 잠금 조회"로 바꾼다. 구현 때 테스트로 확인한다 |
 | 8 | 빠진 잠금 대상 | 상품 수정·삭제·재고 설정이 기존의 잠금 없는 조회를 그대로 쓴다 | `updateProduct`·`changeStock`·`deleteProduct`가 모두 `getProductForAdmin`(잠금 없음)을 쓴다 | 이 세 경로를 잠금 조회로 바꾼다 (7-3절 경로 표). 구현 뒤 잠금 없는 조회를 쓰는 쓰기 경로가 남지 않았는지 검색으로 확인한다 |
 | 9 | 잠금 순서 | 두 경로가 반대 방향으로 잠가 교착이 난다 | 현재는 잠금이 없다. 확정은 주문 → 상품 → 포인트 순으로 호출한다 | 7-3절의 순서(주문 → 브랜드 → 상품 id 오름차순 → 포인트)를 따르면 순환이 없다. 구현 뒤 품목 정렬과 실제 잠금 순서를 SQL 로그로 확인한다 |
+
+**구현 뒤 확인**
+
+| # | 확인한 것 | 방법 |
+|---|---|---|
+| 1 | `getDraftOrderOwnedBy`에서 `readOnly`를 뺐고, 잠금 조회를 호출하는 서비스 메서드는 모두 쓰기 트랜잭션이다 | 코드 대조 |
+| 2 | 충전·재고 설정·상품 수정·삭제·결제는 잠금 조회와 변경이 서비스 메서드 하나 안에 있다. 확정·브랜드 삭제는 Facade가 트랜잭션을 연다 | 코드 대조 |
+| 3 | 서비스·Facade에 예외를 잡는 코드를 추가하지 않았다 | diff 대조 |
+| 4 | 교착이 기술 오류로 집계된다 | 품목 정렬을 빼는 변경 실험 (7-3절) |
+| 5 | 결제를 `REQUIRES_NEW`로 바꾸면 롤백 테스트가 실패해, 한 트랜잭션이라는 가정을 테스트가 지킨다. 실험 뒤 원복했고 코드에 `REQUIRES_NEW`는 없다 | 변경 실험, 검색 |
+| 6 | 추가 잠금 대상은 없었다 | 쓰기 경로 재검토 |
+| 7 | 확정은 주문을, 상품 계열 경로는 상품을 잠금 조회로 처음 로드한다. 브랜드 일괄 삭제는 엔티티 목록 대신 상품 id 목록(`findActiveIdsByBrandId`)만 읽고 하나씩 잠금 조회한다 | 코드 대조, SQL 로그 |
+| 8 | 잠금 없이 상품·브랜드를 읽는 곳은 관리자 단건 조회(`getProductForAdmin`·`getBrandForAdmin`)와 잔액 조회 같은 읽기 전용 GET 경로뿐이다. 쓰기 경로에는 없다 | 검색 |
+| 9 | 잠금 순서가 설계와 같다 | SQL 로그(7-3절), 반대 순서 주문 테스트 |
+| 금지 항목 | `synchronized`는 main·test 어디에도 없다. `Thread.sleep`은 `ConcurrentRunnerTest`(러너 자체 테스트)에만 있고 동시성 시나리오·잠금 구간에는 없다 | 검색 |
 
 **범위 밖으로 둔 반례**: 브랜드 일괄 삭제와 상품 등록의 동시 실행(삭제 중인 브랜드에 새 상품 등록), 잔액 행이 없는 사용자의 동시 최초 생성.
 
