@@ -41,6 +41,8 @@ public class BrandFacade {
 
     @Transactional
     public void deleteBrand(Long id) {
+        // 잠금 순서: 브랜드 → 상품
+        brandService.getBrandForUpdate(id);
         productService.deleteAllActiveByBrand(id);
         brandService.deleteBrand(id);
     }

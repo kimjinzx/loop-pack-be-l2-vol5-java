@@ -58,32 +58,44 @@ public class ProductService {
 
     @Transactional
     public ProductModel updateProduct(Long id, String name, Long price) {
-        ProductModel product = getProduct(id);
+        ProductModel product = getActiveProductForUpdate(id);
         product.updateNameAndPrice(name, price);
         return product;
     }
 
     @Transactional
     public ProductModel changeStock(Long id, int quantity) {
-        ProductModel product = getProduct(id);
+        ProductModel product = getActiveProductForUpdate(id);
         product.changeStock(quantity);
         return product;
     }
 
     @Transactional
     public void deleteProduct(Long id) {
-        ProductModel product = getProductForAdmin(id);
+        ProductModel product = productRepository.findByIdForUpdate(id)
+            .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "[id = " + id + "] 상품을 찾을 수 없습니다."));
         product.delete();
     }
 
+    // id 오름차순으로 하나씩 잠근 뒤, 그 사이 삭제된 상품은 건너뛴다
     @Transactional
     public void deleteAllActiveByBrand(Long brandId) {
-        productRepository.findAllActiveByBrandId(brandId).forEach(ProductModel::delete);
+        for (Long id : productRepository.findActiveIdsByBrandId(brandId)) {
+            productRepository.findByIdForUpdate(id)
+                .filter(product -> product.getDeletedAt() == null)
+                .ifPresent(ProductModel::delete);
+        }
     }
 
     @Transactional
     public void decreaseStock(Long id, int quantity) {
-        ProductModel product = getProduct(id);
+        ProductModel product = getActiveProductForUpdate(id);
         product.decreaseStock(quantity);
+    }
+
+    private ProductModel getActiveProductForUpdate(Long id) {
+        return productRepository.findByIdForUpdate(id)
+            .filter(product -> product.getDeletedAt() == null)
+            .orElseThrow(() -> new CoreException(ErrorType.NOT_FOUND, "[id = " + id + "] 상품을 찾을 수 없습니다."));
     }
 }

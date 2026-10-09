@@ -32,6 +32,11 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
+    public Optional<ProductModel> findByIdForUpdate(Long id) {
+        return productJpaRepository.findByIdForUpdate(id);
+    }
+
+    @Override
     public Page<ProductModel> findAll(Pageable pageable) {
         return productJpaRepository.findAll(pageable);
     }
@@ -47,8 +52,8 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
-    public List<ProductModel> findAllActiveByBrandId(Long brandId) {
-        return productJpaRepository.findByBrandIdAndDeletedAtIsNullOrderByIdAsc(brandId);
+    public List<Long> findActiveIdsByBrandId(Long brandId) {
+        return productJpaRepository.findActiveIdsByBrandId(brandId);
     }
 
     @Override
