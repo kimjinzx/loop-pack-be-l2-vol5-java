@@ -6,6 +6,7 @@ import com.loopers.domain.like.LikeModel;
 import com.loopers.domain.like.LikeService;
 import com.loopers.domain.product.ProductListRevisionService;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.domain.product.ProductRevisionService;
 import com.loopers.domain.product.ProductService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -26,21 +27,27 @@ public class LikeFacade {
     private final LikeService likeService;
     private final ProductService productService;
     private final ProductFacade productFacade;
+    private final ProductRevisionService productRevisionService;
     private final ProductListRevisionService productListRevisionService;
 
-    // 좋아요 수는 상품 목록에 함께 나가므로, 같은 트랜잭션에서 그 상품 브랜드의 목록 revision을 올린다
+    // 좋아요 수는 상품 캐시에 담기고 좋아요순 목록의 순서를 바꾸므로, 같은 트랜잭션에서 두 revision을 올린다
     @Transactional
     public void like(Long userId, Long productId) {
         ProductModel product = productService.getProduct(productId);
         likeService.like(userId, productId);
-        productListRevisionService.increase(product.getBrandId());
+        increaseLikeRevisions(productId, product.getBrandId());
     }
 
     // 삭제된 상품은 목록에 나가지 않으므로 revision을 올리지 않는다
     @Transactional
     public void unlike(Long userId, Long productId) {
         likeService.unlike(userId, productId);
-        productService.findActiveBrandId(productId).ifPresent(productListRevisionService::increase);
+        productService.findActiveBrandId(productId).ifPresent(brandId -> increaseLikeRevisions(productId, brandId));
+    }
+
+    private void increaseLikeRevisions(Long productId, Long brandId) {
+        productRevisionService.increase(productId);
+        productListRevisionService.increaseForLikes(brandId);
     }
 
     public Page<ProductInfo> getMyLikedProducts(Long userId, Pageable pageable) {

@@ -2,9 +2,9 @@ package com.loopers.infrastructure.product;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.loopers.application.product.ProductIdPage;
 import com.loopers.application.product.ProductListCache;
 import com.loopers.application.product.ProductListCacheKey;
-import com.loopers.application.product.ProductListPage;
 import io.micrometer.core.instrument.MeterRegistry;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
@@ -23,8 +23,8 @@ public class RedisProductListCache implements ProductListCache {
 
     static final String METRIC = "product.list.cache";
 
-    // v1은 값의 직렬화 형식 버전이다. 응답 필드가 바뀌면 올린다
-    private static final String KEY_PREFIX = "product:list:v1";
+    // v2는 값의 직렬화 형식 버전이다. 값이 상품 정보 전체에서 상품 id 목록으로 바뀌어 v1에서 올렸다
+    private static final String KEY_PREFIX = "product:list:v2";
 
     // revision이 바뀌어 더 읽히지 않는 키를 정리하는 수명이다. 신선도는 revision이 맡는다
     private static final Duration TTL = Duration.ofMinutes(10);
@@ -34,7 +34,7 @@ public class RedisProductListCache implements ProductListCache {
     private final MeterRegistry meterRegistry;
 
     @Override
-    public Optional<ProductListPage> find(ProductListCacheKey key) {
+    public Optional<ProductIdPage> find(ProductListCacheKey key) {
         String value;
         try {
             value = redisTemplate.opsForValue().get(toRedisKey(key));
@@ -48,7 +48,7 @@ public class RedisProductListCache implements ProductListCache {
             return Optional.empty();
         }
         try {
-            ProductListPage page = objectMapper.readValue(value, ProductListPage.class);
+            ProductIdPage page = objectMapper.readValue(value, ProductIdPage.class);
             count("get", "hit");
             return Optional.of(page);
         } catch (JsonProcessingException e) {
@@ -59,7 +59,7 @@ public class RedisProductListCache implements ProductListCache {
     }
 
     @Override
-    public void save(ProductListCacheKey key, ProductListPage page) {
+    public void save(ProductListCacheKey key, ProductIdPage page) {
         try {
             redisTemplate.opsForValue().set(toRedisKey(key), objectMapper.writeValueAsString(page), TTL);
             count("put", "ok");
@@ -71,7 +71,7 @@ public class RedisProductListCache implements ProductListCache {
 
     static String toRedisKey(ProductListCacheKey key) {
         String brand = key.brandId() == null ? "all" : String.valueOf(key.brandId());
-        return KEY_PREFIX + ":brand=" + brand + ":rev=" + key.revision() + ":sort=" + key.sortType()
+        return KEY_PREFIX + ":brand=" + brand + ":sort=" + key.sortType() + ":rev=" + key.revision()
             + ":page=" + key.page() + ":size=" + key.size();
     }
 

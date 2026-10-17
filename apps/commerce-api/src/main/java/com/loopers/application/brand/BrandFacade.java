@@ -36,11 +36,9 @@ public class BrandFacade {
         return BrandAdminInfo.from(brand);
     }
 
-    // 브랜드 이름은 상품 목록에 함께 나가므로, 같은 트랜잭션에서 그 브랜드의 목록 revision을 올린다
-    @Transactional
+    // 브랜드 이름은 목록 캐시·상품 캐시에 담지 않고 조회할 때 붙이므로 revision을 올리지 않는다
     public BrandAdminInfo updateBrand(Long id, String name) {
         BrandModel brand = brandService.updateBrand(id, name);
-        productListRevisionService.increase(id);
         return BrandAdminInfo.from(brand);
     }
 
@@ -50,6 +48,6 @@ public class BrandFacade {
         brandService.getBrandForUpdate(id);
         productService.deleteAllActiveByBrand(id);
         brandService.deleteBrand(id);
-        productListRevisionService.increase(id);
+        productListRevisionService.increaseForMembership(id);
     }
 }

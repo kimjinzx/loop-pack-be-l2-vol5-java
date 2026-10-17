@@ -7,8 +7,8 @@ import com.loopers.application.order.OrderInfo;
 import com.loopers.application.order.OrderItemCommand;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.point.PointModel;
-import com.loopers.domain.product.ProductListRevisionService;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.domain.product.ProductRevisionService;
 import com.loopers.domain.product.ProductSortType;
 import com.loopers.infrastructure.brand.BrandJpaRepository;
 import com.loopers.infrastructure.point.PointJpaRepository;
@@ -51,7 +51,7 @@ class ProductCacheChangeIntegrationTest {
     private OrderFacade orderFacade;
 
     @Autowired
-    private ProductListRevisionService productListRevisionService;
+    private ProductRevisionService productRevisionService;
 
     @Autowired
     private BrandJpaRepository brandJpaRepository;
@@ -188,14 +188,15 @@ class ProductCacheChangeIntegrationTest {
         assertThat(list(nikeId, ProductSortType.PRICE_ASC)).extracting(ProductInfo::brandName).containsOnly("NIKE");
     }
 
-    @DisplayName("주문 확정이 잔액 부족으로 롤백되면, revision과 재고가 그대로라 캐시된 이전 결과가 DB와 같다.")
+    @DisplayName("주문 확정이 잔액 부족으로 롤백되면, 상품 revision과 재고가 그대로라 캐시된 이전 결과가 DB와 같다.")
     @Test
     void keepsCachedResult_whenChangeIsRolledBack() {
         // arrange
         List<ProductInfo> before = list(nikeId, ProductSortType.PRICE_ASC);
-        long revisionBefore = productListRevisionService.getRevision(nikeId);
+        long revisionBefore = productRevision(runnerId);
         Long orderId = orderFacade.createOrder(POOR_BUYER_ID, List.of(new OrderItemCommand(runnerId, 1))).id();
-        double hitsBefore = cacheCount("hit");
+        double listHitsBefore = cacheCount("product.list.cache");
+        double productHitsBefore = cacheCount("product.cache");
 
         // act
         assertThrows(CoreException.class, () -> orderFacade.confirmOrder(orderId, POOR_BUYER_ID));
@@ -203,10 +204,11 @@ class ProductCacheChangeIntegrationTest {
 
         // assert
         assertAll(
-            () -> assertThat(productListRevisionService.getRevision(nikeId)).isEqualTo(revisionBefore),
+            () -> assertThat(productRevision(runnerId)).isEqualTo(revisionBefore),
             () -> assertThat(productJpaRepository.findById(runnerId).orElseThrow().getStock()).isEqualTo(5),
             () -> assertThat(after).isEqualTo(before),
-            () -> assertThat(cacheCount("hit") - hitsBefore).isEqualTo(1)
+            () -> assertThat(cacheCount("product.list.cache") - listHitsBefore).isEqualTo(1),
+            () -> assertThat(cacheCount("product.cache") - productHitsBefore).as("상품 3개 모두 이전 캐시를 그대로 쓴다").isEqualTo(3)
         );
     }
 
@@ -233,7 +235,11 @@ class ProductCacheChangeIntegrationTest {
         pointJpaRepository.save(point);
     }
 
-    private double cacheCount(String result) {
-        return meterRegistry.counter("product.list.cache", "op", "get", "result", result).count();
+    private long productRevision(Long productId) {
+        return productRevisionService.getRevisions(List.of(productId)).get(productId);
+    }
+
+    private double cacheCount(String metric) {
+        return meterRegistry.counter(metric, "op", "get", "result", "hit").count();
     }
 }

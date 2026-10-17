@@ -4,8 +4,8 @@ import com.loopers.domain.order.OrderItem;
 import com.loopers.domain.order.OrderModel;
 import com.loopers.domain.order.OrderService;
 import com.loopers.domain.point.PointService;
-import com.loopers.domain.product.ProductListRevisionService;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.domain.product.ProductRevisionService;
 import com.loopers.domain.product.ProductService;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
@@ -15,7 +15,6 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
-import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
@@ -27,7 +26,7 @@ public class OrderFacade {
     private final OrderService orderService;
     private final ProductService productService;
     private final PointService pointService;
-    private final ProductListRevisionService productListRevisionService;
+    private final ProductRevisionService productRevisionService;
 
     // 주문 품목(items)은 지연 로딩 컬렉션이라, 조회와 Info 매핑이 같은 트랜잭션(세션) 안에서 끝나야 한다.
     @Transactional(readOnly = true)
@@ -83,16 +82,15 @@ public class OrderFacade {
         List<OrderItem> items = order.getItems().stream()
             .sorted(Comparator.comparing(OrderItem::getProductId))
             .toList();
-        List<Long> brandIds = new ArrayList<>();
         for (OrderItem item : items) {
-            brandIds.add(productService.decreaseStock(item.getProductId(), item.getQuantity()).getBrandId());
+            productService.decreaseStock(item.getProductId(), item.getQuantity());
         }
 
         pointService.pay(userId, order.getTotalAmount());
         orderService.confirmOrder(order, order.getTotalAmount());
 
-        // 재고가 바뀐 상품의 목록 revision은 다른 잠금을 모두 잡은 뒤 마지막에 올린다
-        productListRevisionService.increaseAll(brandIds);
+        // 재고만 바뀌어 목록 순서는 그대로다. 상품 revision만 다른 잠금을 모두 잡은 뒤 마지막에 올린다
+        productRevisionService.increaseAll(items.stream().map(OrderItem::getProductId).toList());
 
         return OrderInfo.from(order);
     }
