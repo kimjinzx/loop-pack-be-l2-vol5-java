@@ -11,9 +11,27 @@
 --
 -- 재현성  : RAND() 대신 CRC32('키') 해시로 값을 정하고, TRUNCATE 후 정해진 순서로 넣어 id까지 매번 같다.
 -- 주의    : brand·product·product_like 의 기존 행을 모두 지우고 다시 만든다. 다른 테이블은 건드리지 않는다.
+--           캐시 revision 테이블도 비워 0으로 돌아가므로, 같은 revision의 옛 캐시가 남지 않게 실습 Redis도 비운다:
+--           docker exec loopers-perf-redis redis-cli FLUSHALL   (perf-compose.yml의 실습 전용 Redis에만 실행한다)
 -- =====================================================================
 USE loopers_perf;
 SET NAMES utf8mb4;
+
+-- 캐시 revision 테이블 — 앱(ddl-auto=create)이 엔티티로 만드는 것과 같은 정의. 측정 실행은 ddl-auto=none이라 여기서 만든다
+CREATE TABLE IF NOT EXISTS product_list_revision (
+    brand_id bigint not null,
+    latest_revision bigint not null,
+    likes_revision bigint not null,
+    price_revision bigint not null,
+    primary key (brand_id)
+) engine=InnoDB;
+CREATE TABLE IF NOT EXISTS product_revision (
+    product_id bigint not null,
+    revision bigint not null,
+    primary key (product_id)
+) engine=InnoDB;
+TRUNCATE TABLE product_list_revision;
+TRUNCATE TABLE product_revision;
 
 SET SESSION cte_max_recursion_depth = 9000;
 -- 사용자 변수에 날짜 값을 넣으면 latin1 문자열로 바뀌므로 문자열로 두고 쓸 때 TIMESTAMP()로 감싼다
