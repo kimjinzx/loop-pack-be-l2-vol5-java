@@ -6,10 +6,15 @@ import com.loopers.support.error.ErrorType;
 import jakarta.persistence.Column;
 import jakarta.persistence.Embedded;
 import jakarta.persistence.Entity;
+import jakarta.persistence.Index;
 import jakarta.persistence.Table;
 
+// 브랜드 목록을 (가격, id) 순서 그대로 읽어 정렬 없이 첫 페이지를 찾고, 건수는 deleted_at까지 인덱스만으로 센다
 @Entity
-@Table(name = "product")
+@Table(
+    name = "product",
+    indexes = @Index(name = "idx_product_brand_deleted_price", columnList = "brand_id, deleted_at, price, id")
+)
 public class ProductModel extends BaseEntity {
 
     private static final int MAX_NAME_LENGTH = 100;
