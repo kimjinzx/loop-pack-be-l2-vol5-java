@@ -9,6 +9,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.dao.DataAccessException;
 import org.springframework.data.redis.core.RedisTemplate;
+import org.springframework.data.redis.core.script.RedisScript;
 import org.springframework.stereotype.Component;
 
 import java.time.Duration;
@@ -29,6 +30,12 @@ public class RedisProductCache implements ProductCache {
 
     // revision이 바뀌어 더 읽히지 않는 키를 정리하는 수명이다. 신선도는 revision이 맡는다
     private static final Duration TTL = Duration.ofMinutes(10);
+
+    // KEYS: 상품 캐시 키들, ARGV[1]: TTL(ms), ARGV[2..]: KEYS와 같은 순서의 값
+    private static final RedisScript<Long> SET_ALL_WITH_TTL = RedisScript.of(
+        "for i, key in ipairs(KEYS) do redis.call('SET', key, ARGV[i + 1], 'PX', ARGV[1]) end return #KEYS",
+        Long.class
+    );
 
     private final RedisTemplate<String, String> redisTemplate;
     private final ObjectMapper objectMapper;
@@ -68,14 +75,23 @@ public class RedisProductCache implements ProductCache {
         return found;
     }
 
-    // 하나라도 저장에 실패하면 나머지도 멈춘다 — Redis가 응답하지 않을 때 상품마다 대기 시간을 다시 쓰지 않게
+    // 여러 상품을 스크립트 한 번(왕복 한 번)으로 저장한다. 실습 환경에서 측정한 두 방식의 비용 때문이다:
+    // - 상품마다 SET: miss 한 번에 Redis 왕복이 상품 수만큼 늘었다
+    // - 파이프라인: 공유 연결을 쓰지 못해 실행마다 전용 master/replica 연결을 새로 맺어, miss 한 번에 연결이 약 5개 더 생겼다
     @Override
     public void saveAll(Map<Long, Long> revisionsByProductId, List<ProductSnapshot> snapshots) {
+        if (snapshots.isEmpty()) {
+            return;
+        }
         try {
+            List<String> keys = new ArrayList<>();
+            List<String> args = new ArrayList<>();
+            args.add(String.valueOf(TTL.toMillis()));
             for (ProductSnapshot snapshot : snapshots) {
-                String key = toRedisKey(snapshot.id(), revisionsByProductId.get(snapshot.id()));
-                redisTemplate.opsForValue().set(key, objectMapper.writeValueAsString(snapshot), TTL);
+                keys.add(toRedisKey(snapshot.id(), revisionsByProductId.get(snapshot.id())));
+                args.add(objectMapper.writeValueAsString(snapshot));
             }
+            redisTemplate.execute(SET_ALL_WITH_TTL, keys, args.toArray());
             count("put", "ok", snapshots.size());
         } catch (DataAccessException | JsonProcessingException e) {
             count("put", "error", 1);
