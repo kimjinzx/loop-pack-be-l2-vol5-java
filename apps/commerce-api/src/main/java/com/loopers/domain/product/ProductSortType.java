@@ -6,8 +6,8 @@ import org.springframework.data.domain.Sort;
 public enum ProductSortType {
     LATEST(Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id"))),
     PRICE_ASC(Sort.by(Sort.Order.asc("price"), Sort.Order.asc("id"))),
-    // TODO: 좋아요 기능 추가 후 좋아요 수 기준 정렬로 교체 (현재는 LATEST로 대체)
-    LIKES_DESC(Sort.by(Sort.Order.desc("createdAt"), Sort.Order.desc("id")));
+    // 좋아요 수는 상품의 컬럼이 아니라서, repository의 좋아요순 조회가 (좋아요 수 내림차순, id 오름차순)으로 정렬한다
+    LIKES_DESC(Sort.unsorted());
 
     private final Sort sort;
 

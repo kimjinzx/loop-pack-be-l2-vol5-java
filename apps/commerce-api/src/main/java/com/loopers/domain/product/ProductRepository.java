@@ -22,6 +22,11 @@ public interface ProductRepository {
 
     Page<ProductModel> findAllActiveByBrandId(Long brandId, Pageable pageable);
 
+    // 취소되지 않은 좋아요 수 내림차순, 같으면 id 오름차순. 전체 후보를 정렬한 뒤 페이지를 자른다
+    Page<ProductModel> findAllActiveOrderByLikeCountDesc(Pageable pageable);
+
+    Page<ProductModel> findAllActiveByBrandIdOrderByLikeCountDesc(Long brandId, Pageable pageable);
+
     // id 오름차순. 엔티티를 읽으면 잠금 없이 로드되므로 id만 돌려준다
     List<Long> findActiveIdsByBrandId(Long brandId);
 
