@@ -29,6 +29,12 @@ springdoc:
   swagger-ui:
     path: /swagger-ui.html
 
+datasource:
+  redis:
+    command-timeout: 300ms # Redis 응답을 기다리는 상한. 넘으면 캐시 오류로 보고 DB에서 조회한다
+    connect-timeout: 300ms
+    reject-commands-when-disconnected: true # 연결이 끊긴 동안은 재연결을 기다리지 않고 바로 실패한다
+
 ---
 spring:
   config:

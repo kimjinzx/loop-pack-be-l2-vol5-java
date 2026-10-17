@@ -1,7 +1,9 @@
 package com.loopers.config.redis;
 
 
+import io.lettuce.core.ClientOptions;
 import io.lettuce.core.ReadFrom;
+import io.lettuce.core.SocketOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -77,6 +79,7 @@ public class RedisConfig{
     ){
         LettuceClientConfiguration.LettuceClientConfigurationBuilder builder = LettuceClientConfiguration.builder();
         if(customizer != null) customizer.accept(builder);
+        applyFailureOptions(builder);
         LettuceClientConfiguration clientConfig = builder.build();
         RedisStaticMasterReplicaConfiguration masterReplicaConfig = new RedisStaticMasterReplicaConfiguration(master.host(), master.port());
         masterReplicaConfig.setDatabase(database);
@@ -84,6 +87,21 @@ public class RedisConfig{
             masterReplicaConfig.addNode(r.host(), r.port());
         }
         return new LettuceConnectionFactory(masterReplicaConfig, clientConfig);
+    }
+
+    // Redis가 느리거나 끊겼을 때 호출자가 기다리는 시간의 상한. 지정한 값만 바꾸고 나머지는 Lettuce 기본값을 둔다
+    private void applyFailureOptions(LettuceClientConfiguration.LettuceClientConfigurationBuilder builder){
+        if(redisProperties.commandTimeout() != null) builder.commandTimeout(redisProperties.commandTimeout());
+        if(redisProperties.connectTimeout() == null && !redisProperties.rejectCommandsWhenDisconnected()) return;
+
+        ClientOptions.Builder options = ClientOptions.builder();
+        if(redisProperties.connectTimeout() != null){
+            options.socketOptions(SocketOptions.builder().connectTimeout(redisProperties.connectTimeout()).build());
+        }
+        if(redisProperties.rejectCommandsWhenDisconnected()){
+            options.disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS);
+        }
+        builder.clientOptions(options.build());
     }
 
     private <K,V> RedisTemplate<K,V> defaultRedisTemplate(
