@@ -26,6 +26,16 @@ class ProductQueryIndexTest {
         assertThat(columns).containsExactly("brand_id", "deleted_at", "price", "id");
     }
 
+    @DisplayName("상품별 좋아요 수 조회용 인덱스는 상품, 삭제 여부 순서의 컬럼으로 만들어진다.")
+    @Test
+    void createsLikeCountIndexInProductDeletedOrder() {
+        // act
+        List<String> columns = indexColumns("product_like", "idx_product_like_product_deleted");
+
+        // assert
+        assertThat(columns).containsExactly("product_id", "deleted_at");
+    }
+
     private List<String> indexColumns(String table, String index) {
         return jdbcTemplate.queryForList(
             "SELECT column_name FROM information_schema.statistics "

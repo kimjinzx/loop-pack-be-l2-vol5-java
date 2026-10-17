@@ -107,5 +107,36 @@ class LikeRepositoryTest {
             assertThat(result.get(20L)).isEqualTo(1L);
             assertThat(result.get(30L)).isNull();
         }
+
+        @DisplayName("여러 상품에 대해 셀 때도, 취소된 좋아요는 개수에 포함하지 않는다.")
+        @Test
+        void excludesCancelledLikes_whenCountingGroupedByProduct() {
+            // arrange
+            likeRepository.save(new LikeModel(1L, 10L));
+            LikeModel cancelled = likeRepository.save(new LikeModel(2L, 10L));
+            cancelled.delete();
+            likeJpaRepository.save(cancelled);
+            LikeModel onlyCancelled = likeRepository.save(new LikeModel(1L, 20L));
+            onlyCancelled.delete();
+            likeJpaRepository.save(onlyCancelled);
+            entityManager.flush();
+            entityManager.clear();
+
+            // act
+            Map<Long, Long> result = likeRepository.countActiveByProductIds(List.of(10L, 20L));
+
+            // assert
+            assertThat(result).containsExactly(Map.entry(10L, 1L));
+        }
+
+        @DisplayName("상품 목록이 비어 있으면, 빈 결과를 반환한다.")
+        @Test
+        void returnsEmpty_whenProductIdsAreEmpty() {
+            // act
+            Map<Long, Long> result = likeRepository.countActiveByProductIds(List.of());
+
+            // assert
+            assertThat(result).isEmpty();
+        }
     }
 }
