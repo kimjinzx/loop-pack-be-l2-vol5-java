@@ -2,6 +2,7 @@ package com.loopers.interfaces.api;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.loopers.utils.DatabaseCleanUp;
+import com.loopers.utils.RedisCleanUp;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
@@ -44,9 +45,14 @@ class IntegratedFlowE2ETest {
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
+    @Autowired
+    private RedisCleanUp redisCleanUp;
+
+    // DB를 비우면 목록 revision도 0으로 돌아가므로, 이전 테스트가 같은 revision으로 남긴 목록 캐시도 함께 비운다
     @AfterEach
     void tearDown() {
         databaseCleanUp.truncateAllTables();
+        redisCleanUp.truncateAll();
     }
 
     @DisplayName("브랜드 등록부터 주문 확정까지, 전체 흐름이 하나로 이어진다.")

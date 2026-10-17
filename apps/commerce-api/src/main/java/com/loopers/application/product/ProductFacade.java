@@ -3,16 +3,20 @@ package com.loopers.application.product;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.brand.BrandService;
 import com.loopers.domain.like.LikeService;
+import com.loopers.domain.product.ProductListRevisionService;
 import com.loopers.domain.product.ProductModel;
 import com.loopers.domain.product.ProductService;
 import com.loopers.domain.product.ProductSortType;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
+import org.springframework.data.domain.PageImpl;
 import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Transactional;
 
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.function.Function;
 
 @RequiredArgsConstructor
@@ -21,6 +25,8 @@ public class ProductFacade {
     private final ProductService productService;
     private final BrandService brandService;
     private final LikeService likeService;
+    private final ProductListRevisionService productListRevisionService;
+    private final ProductListCache productListCache;
 
     public ProductInfo getProduct(Long id) {
         ProductModel product = productService.getProduct(id);
@@ -34,9 +40,22 @@ public class ProductFacade {
         return ProductAdminInfo.from(product);
     }
 
+    // revision과 목록을 같은 읽기 트랜잭션(같은 스냅숏)에서 읽는다 — 이전 결과가 새 revision의 키에 저장되지 않게
+    @Transactional(readOnly = true)
     public Page<ProductInfo> getProducts(Long brandId, ProductSortType sortType, Pageable pageable) {
+        long revision = productListRevisionService.getRevision(brandId);
+        ProductListCacheKey key = new ProductListCacheKey(
+            brandId, revision, sortType, pageable.getPageNumber(), pageable.getPageSize()
+        );
+        Optional<ProductListPage> cached = productListCache.find(key);
+        if (cached.isPresent()) {
+            return new PageImpl<>(cached.get().content(), pageable, cached.get().totalElements());
+        }
+
         Page<ProductModel> products = productService.getProducts(brandId, sortType, pageable);
-        return products.map(toProductInfo(products.getContent()));
+        Page<ProductInfo> result = products.map(toProductInfo(products.getContent()));
+        productListCache.save(key, new ProductListPage(result.getContent(), result.getTotalElements()));
+        return result;
     }
 
     public Page<ProductAdminInfo> getProductsForAdmin(Pageable pageable) {
