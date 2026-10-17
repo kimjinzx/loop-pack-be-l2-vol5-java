@@ -4,6 +4,7 @@ package com.loopers.config.redis;
 import io.lettuce.core.ClientOptions;
 import io.lettuce.core.ReadFrom;
 import io.lettuce.core.SocketOptions;
+import io.lettuce.core.TimeoutOptions;
 import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
@@ -91,12 +92,18 @@ public class RedisConfig{
 
     // Redis가 느리거나 끊겼을 때 호출자가 기다리는 시간의 상한. 지정한 값만 바꾸고 나머지는 Lettuce 기본값을 둔다
     private void applyFailureOptions(LettuceClientConfiguration.LettuceClientConfigurationBuilder builder){
-        if(redisProperties.commandTimeout() != null) builder.commandTimeout(redisProperties.commandTimeout());
-        if(redisProperties.connectTimeout() == null && !redisProperties.rejectCommandsWhenDisconnected()) return;
+        if(redisProperties.connectTimeout() == null && redisProperties.commandTimeout() == null
+                && !redisProperties.rejectCommandsWhenDisconnected()) return;
 
         ClientOptions.Builder options = ClientOptions.builder();
+        // 연결 수립의 상한. Lettuce는 TCP 연결 뒤의 초기 핸드셰이크에도 이 값(RedisURI timeout)을 쓴다
         if(redisProperties.connectTimeout() != null){
+            builder.commandTimeout(redisProperties.connectTimeout());
             options.socketOptions(SocketOptions.builder().connectTimeout(redisProperties.connectTimeout()).build());
+        }
+        // 연결된 뒤 각 명령의 상한. 처음 연결할 때의 초기화보다 짧게 둘 수 있도록 연결 수립과 따로 둔다
+        if(redisProperties.commandTimeout() != null){
+            options.timeoutOptions(TimeoutOptions.enabled(redisProperties.commandTimeout()));
         }
         if(redisProperties.rejectCommandsWhenDisconnected()){
             options.disconnectedBehavior(ClientOptions.DisconnectedBehavior.REJECT_COMMANDS);
