@@ -2,6 +2,7 @@ package com.loopers.application.brand;
 
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.brand.BrandService;
+import com.loopers.domain.product.ProductListRevisionService;
 import com.loopers.domain.product.ProductService;
 import lombok.RequiredArgsConstructor;
 import org.springframework.data.domain.Page;
@@ -14,6 +15,7 @@ import org.springframework.transaction.annotation.Transactional;
 public class BrandFacade {
     private final BrandService brandService;
     private final ProductService productService;
+    private final ProductListRevisionService productListRevisionService;
 
     public BrandInfo getBrand(Long id) {
         BrandModel brand = brandService.getBrand(id);
@@ -34,16 +36,20 @@ public class BrandFacade {
         return BrandAdminInfo.from(brand);
     }
 
+    // 브랜드 이름은 상품 목록에 함께 나가므로, 같은 트랜잭션에서 그 브랜드의 목록 revision을 올린다
+    @Transactional
     public BrandAdminInfo updateBrand(Long id, String name) {
         BrandModel brand = brandService.updateBrand(id, name);
+        productListRevisionService.increase(id);
         return BrandAdminInfo.from(brand);
     }
 
     @Transactional
     public void deleteBrand(Long id) {
-        // 잠금 순서: 브랜드 → 상품
+        // 잠금 순서: 브랜드 → 상품 → 목록 revision
         brandService.getBrandForUpdate(id);
         productService.deleteAllActiveByBrand(id);
         brandService.deleteBrand(id);
+        productListRevisionService.increase(id);
     }
 }
