@@ -47,7 +47,7 @@ public class LikeFacade {
 
     private void increaseLikeRevisions(Long productId, Long brandId) {
         productRevisionService.increase(productId);
-        productListRevisionService.increaseForLikes(brandId);
+        productListRevisionService.increaseForLikes(brandId, productId);
     }
 
     public Page<ProductInfo> getMyLikedProducts(Long userId, Pageable pageable) {

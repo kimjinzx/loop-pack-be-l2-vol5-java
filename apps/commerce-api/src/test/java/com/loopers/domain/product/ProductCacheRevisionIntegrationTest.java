@@ -4,6 +4,7 @@ import com.loopers.application.brand.BrandFacade;
 import com.loopers.application.like.LikeFacade;
 import com.loopers.application.order.OrderFacade;
 import com.loopers.application.product.ProductFacade;
+import com.loopers.concurrency.ConcurrentRunner;
 import com.loopers.domain.brand.BrandModel;
 import com.loopers.domain.order.OrderItem;
 import com.loopers.domain.order.OrderModel;
@@ -21,9 +22,13 @@ import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.transaction.IllegalTransactionStateException;
 
+import java.time.Duration;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.junit.jupiter.api.Assertions.assertAll;
@@ -65,6 +70,9 @@ class ProductCacheRevisionIntegrationTest {
 
     @Autowired
     private OrderJpaRepository orderJpaRepository;
+
+    @Autowired
+    private JdbcTemplate jdbcTemplate;
 
     @Autowired
     private DatabaseCleanUp databaseCleanUp;
@@ -202,6 +210,46 @@ class ProductCacheRevisionIntegrationTest {
             assertThat(listRevisions(brandId)).containsExactly(0L, 0L, 2L);
         }
 
+        @DisplayName("같은 브랜드의 다른 상품 좋아요는 상품 id에 따라 다른 칸의 행을 쓰고, 목록 revision은 칸을 모두 더한 값이다.")
+        @Test
+        void spreadsLikesOverSlots_andSumsThem() {
+            // arrange — id가 이어진 상품은 서로 다른 칸에 들어간다
+            List<Long> productIds = saveProducts(3);
+
+            // act
+            productIds.forEach(id -> likeFacade.like(USER_ID, id));
+
+            // assert
+            assertAll(
+                () -> assertThat(revisionRowsOf(brandId)).isEqualTo(3L),
+                () -> assertThat(listRevisions(brandId)).containsExactly(0L, 0L, 3L)
+            );
+        }
+
+        @DisplayName("같은 브랜드의 여러 상품에 좋아요가 동시에 몰려도, 갱신 유실 없이 목록 revision이 좋아요 수만큼 오른다.")
+        @Test
+        void increasesLikesRevisionWithoutLostUpdates_whenLikesConcentrateOnBrand() {
+            // arrange — 칸 수보다 상품이 많아 같은 칸을 함께 쓰는 좋아요도 생긴다
+            List<Long> productIds = saveProducts(16);
+            List<Callable<Void>> likes = productIds.stream()
+                .map(id -> (Callable<Void>) () -> {
+                    likeFacade.like(USER_ID, id);
+                    return null;
+                })
+                .toList();
+
+            // act
+            List<ConcurrentRunner.WorkerResult<Void>> results = ConcurrentRunner.runTogether(likes, Duration.ofSeconds(30));
+
+            // assert
+            assertAll(
+                () -> assertThat(results).extracting(ConcurrentRunner.WorkerResult::outcome)
+                    .containsOnly(ConcurrentRunner.Outcome.SUCCESS),
+                () -> assertThat(listRevisions(brandId)).containsExactly(0L, 0L, 16L),
+                () -> assertThat(productIds).allSatisfy(id -> assertThat(productRevision(id)).isEqualTo(1L))
+            );
+        }
+
         @DisplayName("삭제된 상품의 좋아요를 취소하면, 목록에 나가지 않는 상품이라 revision을 올리지 않는다.")
         @Test
         void keepsRevisions_whenProductIsDeleted() {
@@ -295,6 +343,18 @@ class ProductCacheRevisionIntegrationTest {
 
     private long productRevision(Long productId) {
         return productRevisionService.getRevisions(List.of(productId)).get(productId);
+    }
+
+    private long revisionRowsOf(Long brandId) {
+        return jdbcTemplate.queryForObject("SELECT COUNT(*) FROM product_list_revision WHERE brand_id = ?", Long.class, brandId);
+    }
+
+    private List<Long> saveProducts(int count) {
+        List<Long> productIds = new ArrayList<>();
+        for (int i = 0; i < count; i++) {
+            productIds.add(productJpaRepository.save(new ProductModel(brandId, "product-" + i, 1_000L, 1)).getId());
+        }
+        return productIds;
     }
 
     private void chargePoint(long amount) {

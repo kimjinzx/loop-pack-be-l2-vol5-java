@@ -11,23 +11,17 @@ public class ProductListRevisionRepositoryImpl implements ProductListRevisionRep
     private final ProductListRevisionJpaRepository productListRevisionJpaRepository;
 
     @Override
-    public void increase(Long brandId, int latest, int price, int likes) {
-        productListRevisionJpaRepository.increase(brandId, latest, price, likes);
+    public void increase(Long brandId, long slot, int latest, int price, int likes) {
+        productListRevisionJpaRepository.increase(brandId, slot, latest, price, likes);
     }
 
     @Override
     public long findRevision(Long brandId, ProductSortType sortType) {
-        return productListRevisionJpaRepository.findById(brandId)
-            .map(revision -> revision.revisionOf(sortType))
-            .orElse(0L);
+        return productListRevisionJpaRepository.sumByBrandId(brandId).of(sortType);
     }
 
     @Override
     public long sumRevisions(ProductSortType sortType) {
-        return switch (sortType) {
-            case LATEST -> productListRevisionJpaRepository.sumLatestRevisions();
-            case PRICE_ASC -> productListRevisionJpaRepository.sumPriceRevisions();
-            case LIKES_DESC -> productListRevisionJpaRepository.sumLikesRevisions();
-        };
+        return productListRevisionJpaRepository.sumAll().of(sortType);
     }
 }
