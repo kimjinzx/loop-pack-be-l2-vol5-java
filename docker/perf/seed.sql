@@ -17,21 +17,23 @@
 USE loopers_perf;
 SET NAMES utf8mb4;
 
--- 캐시 revision 테이블 — 앱(ddl-auto=create)이 엔티티로 만드는 것과 같은 정의. 측정 실행은 ddl-auto=none이라 여기서 만든다
-CREATE TABLE IF NOT EXISTS product_list_revision (
+-- 캐시 revision 테이블 — 앱(ddl-auto=create)이 엔티티로 만드는 것과 같은 정의. 측정 실행은 ddl-auto=none이라 여기서 만든다.
+-- 시드와 함께 0에서 다시 시작하는 파생 데이터라, 이전 구조가 남아 있어도 맞춰지게 지우고 다시 만든다
+DROP TABLE IF EXISTS product_list_revision;
+CREATE TABLE product_list_revision (
     brand_id bigint not null,
     latest_revision bigint not null,
     likes_revision bigint not null,
     price_revision bigint not null,
-    primary key (brand_id)
+    slot bigint not null,
+    primary key (brand_id, slot)
 ) engine=InnoDB;
-CREATE TABLE IF NOT EXISTS product_revision (
+DROP TABLE IF EXISTS product_revision;
+CREATE TABLE product_revision (
     product_id bigint not null,
     revision bigint not null,
     primary key (product_id)
 ) engine=InnoDB;
-TRUNCATE TABLE product_list_revision;
-TRUNCATE TABLE product_revision;
 
 SET SESSION cte_max_recursion_depth = 9000;
 -- 사용자 변수에 날짜 값을 넣으면 latin1 문자열로 바뀌므로 문자열로 두고 쓸 때 TIMESTAMP()로 감싼다
