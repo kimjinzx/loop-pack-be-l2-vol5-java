@@ -5,6 +5,7 @@ import com.loopers.domain.order.OrderModel;
 import com.loopers.domain.order.OrderService;
 import com.loopers.domain.point.PointService;
 import com.loopers.domain.product.ProductModel;
+import com.loopers.domain.product.ProductRevisionService;
 import com.loopers.domain.product.ProductService;
 import com.loopers.support.error.CoreException;
 import com.loopers.support.error.ErrorType;
@@ -25,6 +26,7 @@ public class OrderFacade {
     private final OrderService orderService;
     private final ProductService productService;
     private final PointService pointService;
+    private final ProductRevisionService productRevisionService;
 
     // 주문 품목(items)은 지연 로딩 컬렉션이라, 조회와 Info 매핑이 같은 트랜잭션(세션) 안에서 끝나야 한다.
     @Transactional(readOnly = true)
@@ -86,6 +88,9 @@ public class OrderFacade {
 
         pointService.pay(userId, order.getTotalAmount());
         orderService.confirmOrder(order, order.getTotalAmount());
+
+        // 재고만 바뀌어 목록 순서는 그대로다. 상품 revision만 다른 잠금을 모두 잡은 뒤 마지막에 올린다
+        productRevisionService.increaseAll(items.stream().map(OrderItem::getProductId).toList());
 
         return OrderInfo.from(order);
     }

@@ -39,7 +39,10 @@ public class LikeRepositoryImpl implements LikeRepository {
 
     @Override
     public Map<Long, Long> countActiveByProductIds(List<Long> productIds) {
-        return likeJpaRepository.findByProductIdInAndDeletedAtIsNull(productIds).stream()
-            .collect(Collectors.groupingBy(LikeModel::getProductId, Collectors.counting()));
+        if (productIds.isEmpty()) {
+            return Map.of();
+        }
+        return likeJpaRepository.countActiveGroupByProductId(productIds).stream()
+            .collect(Collectors.toMap(ProductLikeCount::getProductId, ProductLikeCount::getLikeCount));
     }
 }

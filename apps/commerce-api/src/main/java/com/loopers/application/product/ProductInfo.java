@@ -14,4 +14,16 @@ public record ProductInfo(Long id, Long brandId, String brandName, String name, 
             likeCount
         );
     }
+
+    public static ProductInfo from(ProductSnapshot snapshot, String brandName) {
+        return new ProductInfo(
+            snapshot.id(),
+            snapshot.brandId(),
+            brandName,
+            snapshot.name(),
+            snapshot.price(),
+            snapshot.stock(),
+            snapshot.likeCount()
+        );
+    }
 }

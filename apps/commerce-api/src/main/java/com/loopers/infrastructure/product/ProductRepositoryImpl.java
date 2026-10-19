@@ -52,6 +52,16 @@ public class ProductRepositoryImpl implements ProductRepository {
     }
 
     @Override
+    public Page<ProductModel> findAllActiveOrderByLikeCountDesc(Pageable pageable) {
+        return productJpaRepository.findActiveOrderByLikeCountDesc(pageable);
+    }
+
+    @Override
+    public Page<ProductModel> findAllActiveByBrandIdOrderByLikeCountDesc(Long brandId, Pageable pageable) {
+        return productJpaRepository.findActiveByBrandIdOrderByLikeCountDesc(brandId, pageable);
+    }
+
+    @Override
     public List<Long> findActiveIdsByBrandId(Long brandId) {
         return productJpaRepository.findActiveIdsByBrandId(brandId);
     }
