@@ -91,7 +91,7 @@ Content-Type: application/json
 |---|---|---|
 | **202** | `{"transactionKey":"TEST-TX-0001","orderId":"LP-ORD-0000000042","amount":7000,"status":"PENDING"}` | 거래를 만들고 접수했다. **결제 성공이 아니다** |
 | **422** | `{"code":"TEST_PG_REJECTED_BEFORE_CREATE","orderId":"LP-ORD-0000000042","amount":7000,"transactionCreated":false}` | 거래를 저장하거나 처리를 예약하기 **전에** 거절했고, 나중에도 이 요청의 거래를 만들지 않는다 (fixture가 통제할 때만 발생) |
-| 400 | `{"code":"TEST_PG_INVALID_REQUEST"}` | 필수 필드 누락·형식 오류 (fixture 입력 검증) |
+| 400 | `{"code":"TEST_PG_INVALID_REQUEST"}` | 필수 필드 누락·형식 오류. fixture는 다음을 모두 만족해야 받는다: `X-USER-ID`가 있음, 본문이 JSON 객체, `orderId`가 6자 이상 문자열, `cardType`·`cardNo`·`callbackUrl`이 비어 있지 않은 문자열, `amount`가 0보다 큰 정수 number |
 | 그 밖 | fixture 통제로 만든 임의 응답 (5xx, 본문 없음, 잘못된 JSON, 연결 끊김, 응답 지연) | 4-1절 매핑 대상 |
 
 ### 3-3. 거래 단건 조회 — `GET /api/v1/payments/{transactionKey}`
@@ -100,6 +100,9 @@ Content-Type: application/json
 |---|---|
 | 200 | `{"transactionKey":"TEST-TX-0001","orderId":"LP-ORD-0000000042","amount":7000,"status":"SUCCESS"}` |
 | 404 | `{"code":"TEST_PG_NOT_FOUND"}` — 없는 거래, 또는 다른 계정의 거래 |
+| 400 | `{"code":"TEST_PG_INVALID_REQUEST"}` — `X-USER-ID` 없음 (3-4절 주문별 조회도 같고, `orderId` 파라미터가 없을 때도 400) |
+
+계약 밖의 경로·메서드에는 404 `TEST_PG_NOT_FOUND`로 응답한다.
 
 ### 3-4. 주문별 거래 조회 — `GET /api/v1/payments?orderId={providerOrderId}`
 
@@ -346,6 +349,15 @@ payment:
 
 ## 8. 테스트 PG fixture — `TestPgServer`
 
+> 구현: `apps/commerce-api/src/test/java/com/loopers/support/pg/` (2026-10-21). 자체 테스트 `TestPgServerTest` 20건.
+>
+> | 파일 | 맡는 일 |
+> |---|---|
+> | `TestPgServer` | 테스트가 쓰는 유일한 입구. 시작·종료, 통제·관찰 API, 요청 라우팅과 HTTP 처리 |
+> | `TestPgContract` | 3절 계약: 경로·헤더·code 값, 생성 요청 형식 검사, 응답 JSON 모양 |
+> | `TestPgControls` | 8-2절 실패 통제 상태 (다음 생성 요청 통제, 조회 실패 횟수, 응답 붙잡기). 동기화를 여기에 모은다 |
+> | `TestPgTransaction`, `TestPgStatus`, `TestPgLookupFailure`, `TestPgRequest` | 거래, 거래 상태, 조회 실패 방식, 받은 요청 기록 |
+
 JDK 내장 `com.sun.net.httpserver.HttpServer`로 만든다 (새 의존성 없음). 3절 계약만 구현하고, 무작위 지연·성공 확률은 넣지 않는다.
 
 **요청 처리 스레드 풀을 반드시 지정한다** (`setExecutor`, 예: 고정 8개). `HttpServer`는 executor를 주지 않으면 요청을 한 스레드에서 차례로 처리한다. 1초 걸리는 요청 2개를 동시에 보내면 2초가 걸렸다 (13절 실험 E5a). 이 상태에서는 응답을 붙잡는 동안 다른 요청이 모두 멈추고, 동시 confirm 테스트가 PG 쪽에서 저절로 직렬화되어 동시성을 검증하지 못한다.
@@ -356,8 +368,9 @@ JDK 내장 `com.sun.net.httpserver.HttpServer`로 만든다 (새 의존성 없�
 |---|---|
 | 거래 저장소 | `transactionKey → (계정, orderId, amount, status, cardType)`. 카드번호는 거래에 저장하지 않는다 |
 | 호출 수 | `createCount`, `lookupByKeyCount`, `lookupByOrderCount` (요청을 받은 순간 증가) |
-| 요청 기록 | 메서드, 경로, 원본 query, 헤더(`X-USER-ID`, `Content-Type`), 본문 JSON 트리 — 계약 테스트가 형식을 대조하는 용도 |
-| 거래 수 | `transactionCount()`, `transactionsOf(orderId)` |
+| 요청 기록 | `requests()`: 메서드, 인코딩된 그대로의 경로·query, 모든 헤더(이름 대소문자 무시), 본문 문자열과 `json()` — 계약 테스트가 형식을 대조하는 용도. 메모리에만 두고 로그로 찍지 않는다 |
+| 거래 | `transactionCount()`, `transactionsOf(orderId)`(생성 순서), `transaction(key)` |
+| 처리 오류 | `handlerErrors()`: fixture 코드에서 난 예외. 비어 있지 않으면 fixture 버그다 (이때 응답 없이 연결을 닫으므로 클라이언트에는 연결 끊김처럼 보인다). 자체 테스트는 매 테스트 뒤 비어 있는지 확인한다 |
 
 ### 8-2. 통제 기능
 
@@ -369,17 +382,25 @@ JDK 내장 `com.sun.net.httpserver.HttpServer`로 만든다 (새 의존성 없�
 | `holdNextCreateResponse()` | 거래를 저장한 뒤 응답을 붙잡아 클라이언트가 timeout되게 한다 (`releaseHeld()`나 상한 5초까지) | 거래 생성 뒤 응답 유실 (timeout) |
 | `dropNextCreateResponse()` | 거래를 저장한 뒤 응답 헤더를 보내지 않고 `exchange.close()`한다. 클라이언트는 `EOFException`("header parser received no bytes")을 받는다 (E5b) | 거래 생성 뒤 응답 유실 (연결 끊김) |
 | `complete(transactionKey, SUCCESS \| FAILED)` | 거래 상태를 바꾼다. 자동 비동기 처리는 없다 | 조회·callback 결과 만들기 |
-| `failLookups(mode)` / `failNextLookups(n, mode)` / `healLookups()` | 조회를 500 · 붙잡기(timeout) · 연결 끊기 · 깨진 JSON으로 응답 | 재조회 횟수, 회로 OPEN·회복 |
+| `failLookups(mode)` / `failNextLookups(n, mode)` / `healLookups()` | 조회를 `SERVER_ERROR`(500) · `HOLD`(붙잡기) · `DROP`(연결 끊기) · `INVALID_JSON`(200 + 깨진 JSON)으로 실패시킨다. 단건·주문별 조회에 똑같이 적용되고, 계정 확인보다 먼저 적용된다. `DROP`이면 JDK `HttpClient`가 GET을 한 번 다시 보내 서버는 조회를 2번 받는다 (5-2절) | 재조회 횟수, 회로 OPEN·회복 |
 | `seedTransaction(account, orderId, amount, status)` | create 없이 거래를 직접 넣는다 | 2건 이상, 금액·주문 불일치, 다른 계정 |
-| `callbackPayload(transactionKey)` | 3-5절 본문을 만든다 (보내지는 않는다) | callback-first, 중복 알림 |
-| `reset()` / `close()` | 저장소·카운터·통제 초기화 / 붙잡은 응답을 풀고 서버 종료 | 테스트 사이 정리 |
+| `callbackPayload(transactionKey)` | 3-5절 본문을 거래의 현재 상태로 만든다 (보내지는 않는다) | callback-first, 중복 알림 |
+| `releaseHeld()` | 붙잡은 응답을 모두 푼다. 이후 응답은 다시 붙잡힌다 | 늦게 도착한 응답 |
+| `reset()` / `close()` | 붙잡은 응답을 풀고 거래·호출 수·요청 기록·통제·처리 오류를 지운다 / 붙잡은 응답을 풀고 서버·처리 스레드를 정리한다 | 테스트 사이 정리 |
+
+통제 규칙:
+- 생성 통제 4개는 **형식 검사를 통과한 다음 생성 요청 한 번**에만 적용된다. 400으로 거절된 요청은 통제를 쓰지 않는다.
+- 생성 통제가 이미 걸려 있으면 다른 통제를 겹쳐 걸 수 없다 (`IllegalStateException`). 한 테스트 안에서 어느 통제가 적용됐는지 헷갈리지 않게 한다.
+- `reset()`은 거래 키 일련번호를 되돌리지 않는다. 공유 서버를 쓰는 테스트 사이에 같은 거래 키가 다시 나오지 않게 하기 위해서다.
 
 ### 8-3. 수명과 정리
 
 | 테스트 종류 | fixture 수명 | 이유 |
 |---|---|---|
-| 계약 테스트 (Spring 없음) | 테스트 클래스마다 `127.0.0.1:0`(임의 포트)으로 띄우고 `@AfterAll`에서 `close()` | adapter를 직접 만들므로 포트가 달라도 비용이 없다 |
-| Spring 통합 테스트 | **JVM에 하나만** 띄워(`MySqlTestContainersConfig`와 같은 static 시작 방식) 모든 클래스가 같은 주소를 쓴다 | 클래스마다 포트가 다르면 `@DynamicPropertySource` 값이 달라 Spring 테스트 컨텍스트 캐시를 재사용하지 못하고, 클래스마다 컨텍스트를 새로 띄운다. 테스트는 `maxParallelForks = 1`로 한 JVM에서 차례로 돌므로 하나를 공유해도 된다 |
+| 계약 테스트 (Spring 없음) | `TestPgServer.start()`로 테스트 클래스마다 `127.0.0.1:0`(임의 포트)에 띄우고 `@AfterAll`에서 `close()` | adapter를 직접 만들므로 포트가 달라도 비용이 없다 |
+| Spring 통합 테스트 | `TestPgServer.shared()`로 **JVM에 하나만** 띄워 모든 클래스가 같은 주소를 쓴다. 테스트가 `close()`하면 `UnsupportedOperationException`이고, JVM 종료 훅이 닫는다 | 클래스마다 포트가 다르면 `@DynamicPropertySource` 값이 달라 Spring 테스트 컨텍스트 캐시를 재사용하지 못하고, 클래스마다 컨텍스트를 새로 띄운다. 테스트는 `maxParallelForks = 1`로 한 JVM에서 차례로 돌므로 하나를 공유해도 된다 |
+
+서버는 **daemon 스레드에서 시작한다.** `HttpServer`의 디스패처 스레드는 서버를 시작한 스레드의 daemon 여부를 물려받는다. 테스트 스레드에서 바로 시작하면 닫지 않은 서버가 JVM 종료를 막는다 (13절 실험 E7). 처리 스레드 이름은 `test-pg-{서버 번호}-`로 시작해서(`threadNamePrefix()`), 닫은 뒤 그 서버의 스레드가 남았는지 확인할 수 있다.
 
 - 테스트마다 `@BeforeEach`(또는 `@AfterEach`)에서 fixture `reset()`과 **회로 차단기 상태 초기화**(`CircuitBreaker.reset()`)를 함께 한다. 회로는 adapter 빈과 함께 컨텍스트에 남으므로, 앞 테스트의 실패 표본이 뒤 테스트에서 회로를 열 수 있다.
 - 붙잡은 응답은 `reset()`과 `close()`가 반드시 풀어서 스레드가 남지 않게 한다.
@@ -464,7 +485,7 @@ callback은 실제 controller를 거쳐야 하므로, 업무 테스트는 `callb
 ## 12. 구현 순서 (PG 단계)
 
 1. `domain.payment` — port, 요청·결과 타입, `ProviderOrderId` 변환 (+ 단위 테스트: `LP-ORD-0000000042`, `toString` 마스킹)
-2. `TestPgServer` — 3절 계약과 8절 통제·관찰 기능, 스레드 풀 executor (+ fixture 자체를 확인하는 작은 테스트: 응답을 붙잡은 동안 다른 요청이 처리되는지, drop 모드에서 클라이언트가 EOF를 받는지)
+2. ✅ `TestPgServer` — 3절 계약과 8절 통제·관찰 기능, 스레드 풀 executor (+ fixture 자체를 확인하는 작은 테스트: 응답을 붙잡은 동안 다른 요청이 처리되는지, drop 모드에서 클라이언트가 EOF를 받는지). 2026-10-21 완료, `TestPgServerTest` 20건 통과 (13-5절)
 3. `TestPgPaymentGateway` + `PgProperties` + 설정 — `HTTP_1_1`·`NO_PROXY`로 만든 `HttpClient`, `JsonNode` 해석(4-4절), create·조회 매핑 (9절 표 #1~#11)
 4. 재조회·회로 조립 (9절 표 #12~#17)
 5. 로그·마스킹 확인 (9절 표 #18)
@@ -497,6 +518,7 @@ Gradle 캐시에 있는 이 프로젝트의 실제 의존성(Spring Web 6.2.5, J
 | E6b | 객체 하나를 `List`로 바인딩 | 공용 매퍼(`ACCEPT_SINGLE_VALUE_AS_ARRAY` 켬): 원소 1개 목록 |
 | E6c | `transactionCreated`가 없는 본문을 record로 바인딩 | 기본 매퍼: 오류 없이 `false`. 공용 매퍼(`FAIL_ON_NULL_FOR_PRIMITIVES` 켬): `MismatchedInputException` |
 | E6d | 같은 본문을 `JsonNode`로 읽음 | `isIntegralNumber=false`, `isBoolean=false`로 구분 가능 |
+| E7 | `HttpServer`를 main 스레드에서 시작하고 main을 끝냄 / daemon 스레드에서 시작하고 끝냄 (2026-10-21) | `HTTP-Dispatcher daemon=false`, JVM이 끝나지 않음 / `daemon=true`, 바로 종료 |
 
 "공용 매퍼"는 `JacksonConfig`가 켜고 끄는 `DeserializationFeature`를 그대로 적용한 `ObjectMapper`다.
 
@@ -536,6 +558,19 @@ Gradle 캐시에 있는 이 프로젝트의 실제 의존성(Spring Web 6.2.5, J
 - Resilience4j 회로·재시도의 실제 동작(9절 표 #12~#16의 수치)은 문서와 소스로만 확인했다. 의존성을 추가한 뒤 계약 테스트로 확인한다.
 - JDK 내부 GET 재전송이 timeout·500에서는 일어나지 않는다는 점은 POST timeout(E3)과 소스의 재전송 조건으로 추론했다. GET timeout은 9절 표 #12로 확인한다.
 - 실험 프로그램은 저장소에 넣지 않았다. 같은 내용을 9절 계약 테스트와 8절 fixture 자체 테스트가 맡는다.
+
+### 13-5. fixture 자체 테스트 (2026-10-21)
+
+`./gradlew :apps:commerce-api:test --tests 'com.loopers.support.pg.TestPgServerTest'` — 20건 실행, 실패·skip 0건 (테스트 결과 XML로 실행 건수 확인). 같은 실행에서 `checkstyleTest` 통과.
+
+| 묶음 | 확인한 것 |
+|---|---|
+| 생성 (9건) | 202 본문의 타입, PENDING 저장, 요청 기록, 같은 orderId의 새 거래, 형식 오류 400과 거래 0건, 정확한 422와 한 번만 적용되는 통제, 임의 응답과 거래 저장 여부, 응답 붙잡기 중 다른 요청 처리, 응답 끊기(POST 재전송 없음), 통제 겹치기 금지 |
+| 조회 (4건) | 계정 범위(404), 주문별 생성 순서·빈 배열, query 인코딩 풀기(`A%20B%26C%2BD`), 최종 상태 반영과 callback 본문 |
+| 조회 실패 (4건) | 정한 횟수만 500, 회복 전까지 깨진 JSON(단건·주문별), 붙잡기 timeout, 끊기 시 JDK GET 재전송으로 서버 수신 2번 |
+| 수명 (3건) | reset 범위와 이어지는 키 일련번호, close가 붙잡은 응답을 풀고 처리 스레드를 정리한 뒤 연결 거절, 공유 서버는 하나이고 닫을 수 없음 |
+
+**테스트가 실제로 잡는지 확인한 변경 실험**: `httpServer.setExecutor(executor)`를 지우고 다시 돌리면 "응답을 붙잡으면 … 붙잡은 동안에도 다른 요청은 처리된다" 1건만 실패했다 (20건 중 1건). 실험 뒤 원복하고 다시 확인했다.
 
 ---
 *이 문서는 구현하며 판단이 바뀌면 그때그때 갱신한다.*
