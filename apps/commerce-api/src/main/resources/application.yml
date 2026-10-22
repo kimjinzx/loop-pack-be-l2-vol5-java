@@ -35,6 +35,15 @@ datasource:
     connect-timeout: 1s # 연결 수립(초기 핸드셰이크 포함)의 상한. JVM의 첫 연결은 300ms를 넘을 수 있다
     reject-commands-when-disconnected: true # 연결이 끊긴 동안은 재연결을 기다리지 않고 바로 실패한다
 
+payment:
+  pg:
+    base-url: http://127.0.0.1:8082 # 로컬 테스트 PG 주소. 실제 PG 앱은 없어서 그냥 띄우면 연결 실패로 결과 미확인이 된다. 테스트는 fixture 주소로 덮어쓴다
+    callback-url: http://127.0.0.1:8080/api/v1/payments/callback # PG가 결과를 알릴 주소. 고객 입력으로 바꿀 수 없다
+    provider-user-id: "135135" # PG로 보내는 합성 제공자 계정(X-USER-ID). 고객 식별과 관계가 없다
+    connect-timeout: 500ms
+    create-read-timeout: 3s # create timeout은 결과 미확인을 만들므로 조회보다 길게 기다린다
+    lookup-read-timeout: 1s # 조회는 다시 물어도 안전하므로 짧게 끊는다
+
 ---
 spring:
   config:
