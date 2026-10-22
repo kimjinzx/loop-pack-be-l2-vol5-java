@@ -6,12 +6,16 @@ import com.loopers.domain.payment.PgLookupResult;
 import com.loopers.domain.payment.PgPaymentRequest;
 import com.loopers.domain.payment.PgTransaction;
 import com.loopers.domain.payment.PgTransactionStatus;
+import com.loopers.domain.payment.UnavailableReason;
 import com.loopers.domain.payment.UnknownReason;
 import com.loopers.support.pg.TestPgContract;
+import com.loopers.support.pg.TestPgLookupFailure;
 import com.loopers.support.pg.TestPgRequest;
 import com.loopers.support.pg.TestPgServer;
 import com.loopers.support.pg.TestPgStatus;
 import com.loopers.support.pg.TestPgTransaction;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeAll;
@@ -25,6 +29,7 @@ import org.springframework.boot.test.system.OutputCaptureExtension;
 
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 
@@ -40,9 +45,12 @@ class PaymentProviderContractTest {
     private static final String CARD_NO = "0000-0000-0000-0000";
     private static final String CALLBACK_URL = "http://127.0.0.1:8080/api/v1/payments/callback";
     private static final Duration CREATE_READ_TIMEOUT = Duration.ofMillis(500);
+    // 재시도 대기 합(100ms + 200ms)보다 길어야 한다. 짧으면 같은 조회의 재시도가 OPEN 대기를 넘겨 HALF_OPEN 탐색으로 나간다
+    private static final Duration OPEN_STATE_WAIT = Duration.ofMillis(500);
     private static final PgPaymentRequest REQUEST = new PgPaymentRequest(ORDER_ID, "TEST", CARD_NO, AMOUNT);
 
     private static TestPgServer pg;
+    private CircuitBreakerRegistry circuitBreakers;
     private TestPgPaymentGateway gateway;
 
     @BeforeAll
@@ -55,9 +63,11 @@ class PaymentProviderContractTest {
         pg.close();
     }
 
+    // 테스트마다 새 registry를 써서 앞 테스트의 실패 표본이 회로를 열지 않게 한다
     @BeforeEach
     void setUp() {
-        gateway = new TestPgPaymentGateway(properties(pg.baseUrl()));
+        circuitBreakers = CircuitBreakerRegistry.ofDefaults();
+        gateway = new TestPgPaymentGateway(properties(pg.baseUrl(), TestPgContract.PROVIDER_ACCOUNT), circuitBreakers);
     }
 
     @AfterEach
@@ -220,7 +230,8 @@ class PaymentProviderContractTest {
             TestPgServer stopped = TestPgServer.start();
             String deadUrl = stopped.baseUrl();
             stopped.close();
-            TestPgPaymentGateway toDeadPg = new TestPgPaymentGateway(properties(deadUrl));
+            TestPgPaymentGateway toDeadPg = new TestPgPaymentGateway(
+                properties(deadUrl, TestPgContract.PROVIDER_ACCOUNT), CircuitBreakerRegistry.ofDefaults());
 
             // act
             PgCreateResult result = toDeadPg.requestPayment(REQUEST);
@@ -286,6 +297,182 @@ class PaymentProviderContractTest {
         }
     }
 
+    @DisplayName("조회 재시도와 회로 차단기를 거칠 때, ")
+    @Nested
+    class LookupResilience {
+
+        @DisplayName("다시 물으면 달라질 수 있는 실패(timeout·500·깨진 JSON)는 HTTP 3번 뒤 확인 불가다. (#12)")
+        @Test
+        void retriesRetryableFailuresUpToThreeTimes() {
+            // arrange
+            TestPgTransaction seeded = seed();
+            Map<TestPgLookupFailure, UnavailableReason> failures = Map.of(
+                TestPgLookupFailure.HOLD, UnavailableReason.TIMEOUT,
+                TestPgLookupFailure.SERVER_ERROR, UnavailableReason.SERVER_ERROR,
+                TestPgLookupFailure.INVALID_JSON, UnavailableReason.INVALID_BODY
+            );
+
+            // act & assert
+            failures.forEach((failure, reason) -> {
+                TestPgPaymentGateway fresh = freshGateway();
+                int before = pg.lookupByKeyCount();
+                pg.failLookups(failure);
+                assertThat(fresh.findTransaction(seeded.transactionKey())).as(failure.name())
+                    .isEqualTo(new PgLookupResult.Unavailable(reason));
+                assertThat(pg.lookupByKeyCount() - before).as(failure.name()).isEqualTo(3);
+                pg.healLookups();
+                pg.releaseHeld();
+            });
+        }
+
+        @DisplayName("응답 없는 연결 끊김은 시도 3번이지만, JDK가 GET을 한 번씩 다시 보내 PG는 6번 받는다. (#12)")
+        @Test
+        void countsJdkGetResend_whenConnectionDrops() {
+            // arrange
+            TestPgTransaction seeded = seed();
+            pg.failLookups(TestPgLookupFailure.DROP);
+
+            // act
+            PgLookupResult result = gateway.findTransaction(seeded.transactionKey());
+
+            // assert
+            assertThat(result).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.CONNECTION_LOST));
+            assertThat(pg.lookupByKeyCount()).isEqualTo(6);
+        }
+
+        @DisplayName("404는 정상 응답(0건)이고, 404 외의 4xx는 다시 묻지 않는다. 둘 다 HTTP 1번이다. (#12)")
+        @Test
+        void doesNotRetryNotFoundOrClientError() {
+            // arrange: 제공자 계정이 비어 있으면 PG가 400으로 응답한다
+            TestPgPaymentGateway blankAccount = new TestPgPaymentGateway(properties(pg.baseUrl(), ""), CircuitBreakerRegistry.ofDefaults());
+
+            // act
+            PgLookupResult notFound = gateway.findTransaction("TEST-TX-NONE");
+            int afterNotFound = pg.lookupByKeyCount();
+            PgLookupResult clientError = blankAccount.findTransaction("TEST-TX-NONE");
+
+            // assert
+            assertThat(notFound).isEqualTo(new PgLookupResult.Transactions(List.of()));
+            assertThat(afterNotFound).isEqualTo(1);
+            assertThat(clientError).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.UNEXPECTED_STATUS));
+            assertThat(pg.lookupByKeyCount()).isEqualTo(2);
+        }
+
+        @DisplayName("한두 번 실패한 뒤 재시도 안에서 성공하면 거래를 돌려주고, HTTP 수는 실패 수 + 1이다. (#13)")
+        @Test
+        void recoversWithinRetries() {
+            // arrange
+            TestPgTransaction seeded = seed();
+            pg.failNextLookups(2, TestPgLookupFailure.SERVER_ERROR);
+
+            // act
+            PgLookupResult result = gateway.findTransaction(seeded.transactionKey());
+
+            // assert
+            assertThat(keysOf(result)).containsExactly(seeded.transactionKey());
+            assertThat(pg.lookupByKeyCount()).isEqualTo(3);
+        }
+
+        @DisplayName("500이 계속되면 1회차 조회는 HTTP 3번, 2회차는 2번 만에 회로가 열리고, 3회차는 PG에 묻지 않는다. (#14)")
+        @Test
+        void opensCircuitAfterMinimumFailedSamples() {
+            // arrange
+            TestPgTransaction seeded = seed();
+            pg.failLookups(TestPgLookupFailure.SERVER_ERROR);
+
+            // act & assert
+            assertThat(gateway.findTransaction(seeded.transactionKey())).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.SERVER_ERROR));
+            assertThat(pg.lookupByKeyCount()).isEqualTo(3);
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+
+            assertThat(gateway.findTransaction(seeded.transactionKey())).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.CIRCUIT_OPEN));
+            assertThat(pg.lookupByKeyCount()).isEqualTo(5);
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+
+            assertThat(gateway.findTransaction(seeded.transactionKey())).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.CIRCUIT_OPEN));
+            assertThat(pg.lookupByKeyCount()).isEqualTo(5);
+        }
+
+        @DisplayName("열린 뒤 대기 시간이 지나고 PG가 회복되면, 탐색 조회 2건이 모두 성공해 회로가 닫힌다. (#15)")
+        @Test
+        void closesCircuit_whenProbesSucceed() throws InterruptedException {
+            // arrange
+            TestPgTransaction seeded = openCircuit();
+            pg.healLookups();
+            waitPastOpenState();
+
+            // act
+            PgLookupResult firstProbe = gateway.findTransaction(seeded.transactionKey());
+            CircuitBreaker.State afterFirst = lookupCircuit().getState();
+            PgLookupResult secondProbe = gateway.findTransaction(seeded.transactionKey());
+
+            // assert
+            assertThat(keysOf(firstProbe)).containsExactly(seeded.transactionKey());
+            assertThat(afterFirst).isEqualTo(CircuitBreaker.State.HALF_OPEN);
+            assertThat(keysOf(secondProbe)).containsExactly(seeded.transactionKey());
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.CLOSED);
+        }
+
+        @DisplayName("대기 뒤에도 실패가 이어지면 다시 열리고, 탐색 2건 중 1건만 실패해도 실패율 50%라 다시 열린다. (#16)")
+        @Test
+        void reopensCircuit_whenAnyProbeFails() throws InterruptedException {
+            // arrange
+            TestPgTransaction seeded = openCircuit();
+            waitPastOpenState();
+
+            // act & assert: 계속 실패
+            assertThat(gateway.findTransaction(seeded.transactionKey())).isEqualTo(new PgLookupResult.Unavailable(UnavailableReason.CIRCUIT_OPEN));
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+
+            // act & assert: 첫 탐색은 실패, 재시도한 둘째 탐색은 성공 → 조회는 성공했지만 회로는 다시 열린다
+            pg.healLookups();
+            pg.failNextLookups(1, TestPgLookupFailure.SERVER_ERROR);
+            waitPastOpenState();
+            assertThat(keysOf(gateway.findTransaction(seeded.transactionKey()))).containsExactly(seeded.transactionKey());
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+        }
+
+        @DisplayName("조회 회로가 열려 있어도 create는 회로를 쓰지 않아 PG에 도달한다. (#17)")
+        @Test
+        void createIgnoresLookupCircuit() {
+            // arrange
+            openCircuit();
+
+            // act
+            PgCreateResult result = gateway.requestPayment(REQUEST);
+
+            // assert
+            assertThat(result).isInstanceOf(PgCreateResult.Accepted.class);
+            assertThat(pg.createCount()).isEqualTo(1);
+        }
+
+        private TestPgTransaction openCircuit() {
+            TestPgTransaction seeded = seed();
+            pg.failLookups(TestPgLookupFailure.SERVER_ERROR);
+            gateway.findTransaction(seeded.transactionKey());
+            gateway.findTransaction(seeded.transactionKey());
+            assertThat(lookupCircuit().getState()).isEqualTo(CircuitBreaker.State.OPEN);
+            return seeded;
+        }
+
+        // OPEN → HALF_OPEN 자동 전환을 꺼 두었으므로, 대기 시간이 지난 뒤 들어온 호출에서 전환된다
+        private void waitPastOpenState() throws InterruptedException {
+            Thread.sleep(OPEN_STATE_WAIT.plusMillis(100).toMillis());
+        }
+
+        private CircuitBreaker lookupCircuit() {
+            return circuitBreakers.circuitBreaker(TestPgPaymentGateway.LOOKUP_CIRCUIT_BREAKER);
+        }
+
+        private TestPgTransaction seed() {
+            return pg.seedTransaction(TestPgContract.PROVIDER_ACCOUNT, ORDER_ID, AMOUNT, TestPgStatus.PENDING);
+        }
+
+        private TestPgPaymentGateway freshGateway() {
+            return new TestPgPaymentGateway(properties(pg.baseUrl(), TestPgContract.PROVIDER_ACCOUNT), CircuitBreakerRegistry.ofDefaults());
+        }
+    }
+
     @DisplayName("생성·거절·timeout·연결 끊김을 거치는 동안 로그에 카드번호가 남지 않는다. (#18)")
     @Test
     void neverLogsCardNumber(CapturedOutput output) {
@@ -310,10 +497,13 @@ class PaymentProviderContractTest {
         return ((PgLookupResult.Transactions) result).transactions().stream().map(PgTransaction::transactionKey).toList();
     }
 
-    private static PgProperties properties(String baseUrl) {
+    // 명세서 5절의 테스트 값: create 500ms, 조회 300ms, 재시도 3회(100ms → 200ms), 회로 창 10·최소 5·50%·OPEN 500ms·탐색 2
+    private static PgProperties properties(String baseUrl, String providerAccount) {
         return new PgProperties(
-            baseUrl, CALLBACK_URL, TestPgContract.PROVIDER_ACCOUNT,
-            Duration.ofMillis(500), CREATE_READ_TIMEOUT, Duration.ofMillis(300)
+            baseUrl, CALLBACK_URL, providerAccount,
+            Duration.ofMillis(500), CREATE_READ_TIMEOUT, Duration.ofMillis(300),
+            new PgProperties.LookupRetry(3, Duration.ofMillis(100), 2.0),
+            new PgProperties.LookupCircuitBreaker(10, 5, 50f, OPEN_STATE_WAIT, 2)
         );
     }
 }

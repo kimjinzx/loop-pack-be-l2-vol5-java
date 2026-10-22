@@ -9,6 +9,13 @@ import com.loopers.domain.payment.PgPaymentRequest;
 import com.loopers.domain.payment.PgTransaction;
 import com.loopers.domain.payment.UnavailableReason;
 import com.loopers.domain.payment.UnknownReason;
+import io.github.resilience4j.circuitbreaker.CallNotPermittedException;
+import io.github.resilience4j.circuitbreaker.CircuitBreaker;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerConfig;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
+import io.github.resilience4j.core.IntervalFunction;
+import io.github.resilience4j.retry.Retry;
+import io.github.resilience4j.retry.RetryConfig;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
@@ -36,11 +43,17 @@ import java.util.function.Supplier;
  *       기본 프록시 선택기가 끼면 우리가 센 호출 수 밖에서 재전송·버퍼링이 일어날 수 있다 (명세서 5-2절).</li>
  *   <li>응답은 상태 코드와 본문 문자열로만 받고, 해석은 {@link TestPgResponses}가 맡는다.</li>
  *   <li>요청·응답 본문은 로그에 남기지 않는다. 카드번호가 들어 있기 때문이다.</li>
+ *   <li>조회만 {@code 재시도(회로 차단기(HTTP 1회))}로 감싼다 (명세서 5-5절). 회로가 안쪽이라 시도 하나가 표본 하나이고,
+ *       재시도는 다시 물으면 달라질 수 있는 실패({@link PgRetryableException})만 다시 묻는다. 회로가 거절한 호출과
+ *       404 외의 4xx는 다시 묻지 않는다. 회로가 열려도 결제를 실패로 정하지 않고 {@code CIRCUIT_OPEN} 확인 불가만 돌려준다.</li>
  * </ul>
  */
 @Slf4j
 @Component
 public class TestPgPaymentGateway implements PaymentGateway {
+
+    /** 조회 회로 차단기 이름. 단건·주문별 조회가 같은 회로를 쓴다. */
+    public static final String LOOKUP_CIRCUIT_BREAKER = "pgLookup";
 
     static final String PAYMENTS_PATH = "/api/v1/payments";
     static final String ACCOUNT_HEADER = "X-USER-ID";
@@ -50,8 +63,10 @@ public class TestPgPaymentGateway implements PaymentGateway {
     private final RestClient createClient;
     private final RestClient lookupClient;
     private final String callbackUrl;
+    private final CircuitBreaker lookupCircuitBreaker;
+    private final Retry lookupRetry;
 
-    public TestPgPaymentGateway(PgProperties properties) {
+    public TestPgPaymentGateway(PgProperties properties, CircuitBreakerRegistry circuitBreakerRegistry) {
         HttpClient httpClient = HttpClient.newBuilder()
             .version(HttpClient.Version.HTTP_1_1)
             .proxy(HttpClient.Builder.NO_PROXY)
@@ -60,6 +75,8 @@ public class TestPgPaymentGateway implements PaymentGateway {
         this.createClient = restClient(httpClient, properties.createReadTimeout(), properties);
         this.lookupClient = restClient(httpClient, properties.lookupReadTimeout(), properties);
         this.callbackUrl = properties.callbackUrl();
+        this.lookupCircuitBreaker = circuitBreakerRegistry.circuitBreaker(LOOKUP_CIRCUIT_BREAKER, circuitBreakerConfig(properties.lookupCircuitBreaker()));
+        this.lookupRetry = Retry.of("pgLookupRetry", retryConfig(properties.lookupRetry()));
     }
 
     @Override
@@ -92,12 +109,17 @@ public class TestPgPaymentGateway implements PaymentGateway {
     }
 
     private PgLookupResult lookup(Supplier<List<PgTransaction>> call) {
+        Supplier<List<PgTransaction>> guarded = Retry.decorateSupplier(lookupRetry, CircuitBreaker.decorateSupplier(lookupCircuitBreaker, call));
+        UnavailableReason reason;
         try {
-            return new PgLookupResult.Transactions(call.get());
+            return new PgLookupResult.Transactions(guarded.get());
+        } catch (CallNotPermittedException e) {
+            reason = UnavailableReason.CIRCUIT_OPEN;
         } catch (PgLookupException e) {
-            log.warn("PG 거래를 조회하지 못했다. reason={}", e.reason());
-            return new PgLookupResult.Unavailable(e.reason());
+            reason = e.reason();
         }
+        log.warn("PG 거래를 조회하지 못했다. reason={}", reason);
+        return new PgLookupResult.Unavailable(reason);
     }
 
     // 단건 조회의 404는 "지금 보이는 거래가 없다"는 정상 응답이다
@@ -163,6 +185,30 @@ public class TestPgPaymentGateway implements PaymentGateway {
             }
         }
         return false;
+    }
+
+    // 기록과 무시를 둘 다 정한다. recordException만 주면 목록 밖 예외(404 외 4xx)가 성공 표본으로 세어져 실패율을 낮춘다
+    private static CircuitBreakerConfig circuitBreakerConfig(PgProperties.LookupCircuitBreaker settings) {
+        return CircuitBreakerConfig.custom()
+            .slidingWindowType(CircuitBreakerConfig.SlidingWindowType.COUNT_BASED)
+            .slidingWindowSize(settings.slidingWindowSize())
+            .minimumNumberOfCalls(settings.minimumNumberOfCalls())
+            .failureRateThreshold(settings.failureRateThreshold())
+            .waitDurationInOpenState(settings.waitDurationInOpenState())
+            .permittedNumberOfCallsInHalfOpenState(settings.permittedCallsInHalfOpenState())
+            .automaticTransitionFromOpenToHalfOpenEnabled(false)
+            .recordException(error -> error instanceof PgRetryableException)
+            .ignoreExceptions(PgNonRetryableException.class)
+            .build();
+    }
+
+    // jitter는 두지 않는다. 시도 사이 대기를 테스트에서 정확히 예상하기 위해서다
+    private static RetryConfig retryConfig(PgProperties.LookupRetry settings) {
+        return RetryConfig.custom()
+            .maxAttempts(settings.maxAttempts())
+            .intervalFunction(IntervalFunction.ofExponentialBackoff(settings.initialWait(), settings.multiplier()))
+            .retryOnException(error -> error instanceof PgRetryableException)
+            .build();
     }
 
     private static RestClient restClient(HttpClient httpClient, Duration readTimeout, PgProperties properties) {

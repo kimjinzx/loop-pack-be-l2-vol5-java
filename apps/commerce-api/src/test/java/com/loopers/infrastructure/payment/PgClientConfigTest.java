@@ -1,6 +1,7 @@
 package com.loopers.infrastructure.payment;
 
 import com.loopers.domain.payment.PaymentGateway;
+import io.github.resilience4j.circuitbreaker.CircuitBreakerRegistry;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -23,6 +24,9 @@ class PgClientConfigTest {
     @Autowired
     private PaymentGateway paymentGateway;
 
+    @Autowired
+    private CircuitBreakerRegistry circuitBreakerRegistry;
+
     @DisplayName("payment.pg 설정이 주소·제공자 계정·시간 상한으로 바인딩된다.")
     @Test
     void bindsPaymentPgProperties() {
@@ -33,6 +37,23 @@ class PgClientConfigTest {
         assertThat(properties.connectTimeout()).isEqualTo(Duration.ofMillis(500));
         assertThat(properties.createReadTimeout()).isEqualTo(Duration.ofSeconds(3));
         assertThat(properties.lookupReadTimeout()).isEqualTo(Duration.ofSeconds(1));
+        assertThat(properties.lookupRetry()).isEqualTo(new PgProperties.LookupRetry(3, Duration.ofMillis(100), 2.0));
+        assertThat(properties.lookupCircuitBreaker())
+            .isEqualTo(new PgProperties.LookupCircuitBreaker(10, 5, 50f, Duration.ofSeconds(10), 2));
+    }
+
+    @DisplayName("조회 회로 차단기는 설정값으로 만들어져 registry에 pgLookup 이름으로 등록된다.")
+    @Test
+    void registersLookupCircuitBreakerWithConfiguredValues() {
+        // act
+        var config = circuitBreakerRegistry.circuitBreaker(TestPgPaymentGateway.LOOKUP_CIRCUIT_BREAKER).getCircuitBreakerConfig();
+
+        // assert
+        assertThat(config.getSlidingWindowSize()).isEqualTo(10);
+        assertThat(config.getMinimumNumberOfCalls()).isEqualTo(5);
+        assertThat(config.getFailureRateThreshold()).isEqualTo(50f);
+        assertThat(config.getPermittedNumberOfCallsInHalfOpenState()).isEqualTo(2);
+        assertThat(config.isAutomaticTransitionFromOpenToHalfOpenEnabled()).isFalse();
     }
 
     @DisplayName("PaymentGateway 빈은 테스트 PG adapter다.")

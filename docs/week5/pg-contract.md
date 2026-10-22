@@ -269,7 +269,7 @@ adapter는 **형식**(상태 코드, JSON 구조와 타입, 생성 응답이 요
 | 최소 표본 | 5 | 한두 번의 실패로 열리지 않게 한다 |
 | 실패율 기준 | 50% | |
 | 느린 호출 | 따로 세지 않음 | 응답 대기가 이미 timeout으로 잘려 실패로 기록된다 |
-| OPEN 유지 | 10s / 200ms | 테스트는 짧게 두고, 상한이 있는 대기로 확인한다 |
+| OPEN 유지 | 10s / 500ms | 테스트는 짧게 두고, 상한이 있는 대기로 확인한다. **재시도 대기 합(100ms + 200ms)보다 길어야 한다.** 짧으면 같은 조회의 재시도가 OPEN 대기를 넘겨 HALF_OPEN 탐색으로 나가, 5-5절 예의 호출 수가 달라진다 (13-6절) |
 | HALF_OPEN 탐색 호출 | 2 | 2건이 끝나면 실패율을 계산해, 기준 **이상**(50% 이상)이면 다시 OPEN, 아니면 CLOSED가 된다. 2건 중 1건만 실패해도 50%라서 OPEN이다. **2건 모두 성공해야 CLOSED** |
 | OPEN → HALF_OPEN 전환 | 다음 호출 때 (자동 전환 끔 — Resilience4j 기본값) | 대기 시간이 지나도 호출이 들어와야 전환된다. 백그라운드 스레드 없이 결정적으로 확인한다 |
 | 실패로 기록 | 재시도 가능 예외(`PgRetryableException`: timeout, 연결 실패·끊김, 5xx, 형식 오류) | `recordException`에 이 예외만 지정한다 |
@@ -431,7 +431,7 @@ callback은 실제 controller를 거쳐야 하므로, 업무 테스트는 `callb
 | 7 | 거래 생성 뒤 응답 붙잡기 | `Unknown(TIMEOUT)`, fixture 거래 1, **`createCount` 1** (숨은 재시도 없음), 대기 시간이 create timeout 근처 |
 | 8 | 거래 생성 뒤 연결 끊기 | `Unknown(CONNECTION_LOST)`, fixture 거래 1, **`createCount` 1** |
 | 9 | 단건 조회 형식·결과 | `GET /api/v1/payments/{key}` + 헤더. 200 → `Transactions([tx])` (필드 값 일치), 404 → `Transactions([])` |
-| 10 | 주문별 조회와 query 인코딩 | `orderId=LP-ORD-0000000042` 0건 → `[]`, 1건, 2건 → 2건 그대로. 특수문자(`A B&C+D`)를 넘기면 fixture가 같은 문자열로 받는다. 본문이 배열이 아닌 객체 하나면 `Unavailable(INVALID_BODY)` (원소 1개 목록으로 받지 않는다) |
+| 10 | 주문별 조회와 query 인코딩 | `orderId=LP-ORD-0000000042` 0건 → `[]`, 1건, 2건 → 2건 그대로. 특수문자(`A B&C+D`)를 넘기면 fixture가 같은 문자열로 받는다(`orderId=A%20B%26C%2BD`). 본문이 배열이 아닌 객체 하나면 `Unavailable(INVALID_BODY)` (원소 1개 목록으로 받지 않는다) — 이 형식은 fixture로 만들 수 없어 `TestPgResponsesTest`가 맡는다 |
 | 11 | 계정 범위 | 다른 계정으로 seed한 거래는 단건 404·주문별 `[]` |
 | 12 | 조회 재시도와 실제 호출 수 | timeout·500·깨진 JSON이면 HTTP **3번** 후 `Unavailable`. 응답 없는 연결 끊김이면 HTTP **6번**(시도 3 × JDK 내부 GET 재전송 2, 5-2절). 404·400이면 HTTP 1번 |
 | 13 | 조회 1~2회 실패 후 회복 | 재시도 안에서 성공 → `Transactions`, HTTP 횟수 = 실패 수 + 1 (실패를 500으로 만든 경우) |
@@ -484,12 +484,12 @@ callback은 실제 controller를 거쳐야 하므로, 업무 테스트는 `callb
 
 ## 12. 구현 순서 (PG 단계)
 
-1. `domain.payment` — port, 요청·결과 타입, `ProviderOrderId` 변환 (+ 단위 테스트: `LP-ORD-0000000042`, `toString` 마스킹)
+1. ✅ `domain.payment` — port, 요청·결과 타입, `ProviderOrderId` 변환 (+ 단위 테스트: `LP-ORD-0000000042`, `toString` 마스킹). 2026-10-23 완료
 2. ✅ `TestPgServer` — 3절 계약과 8절 통제·관찰 기능, 스레드 풀 executor (+ fixture 자체를 확인하는 작은 테스트: 응답을 붙잡은 동안 다른 요청이 처리되는지, drop 모드에서 클라이언트가 EOF를 받는지). 2026-10-21 완료, `TestPgServerTest` 20건 통과 (13-5절)
-3. `TestPgPaymentGateway` + `PgProperties` + 설정 — `HTTP_1_1`·`NO_PROXY`로 만든 `HttpClient`, `JsonNode` 해석(4-4절), create·조회 매핑 (9절 표 #1~#11)
-4. 재조회·회로 조립 (9절 표 #12~#17)
-5. 로그·마스킹 확인 (9절 표 #18)
-6. `./gradlew :apps:commerce-api:check` — Checkstyle·ArchUnit·기존 회귀
+3. ✅ `TestPgPaymentGateway` + `PgProperties` + 설정 — `HTTP_1_1`·`NO_PROXY`로 만든 `HttpClient`, `JsonNode` 해석(4-4절, `TestPgResponses`), create·조회 매핑 (9절 표 #1~#11). 2026-10-23 완료
+4. ✅ 재조회·회로 조립 (9절 표 #12~#17). 2026-10-23 완료
+5. ✅ 로그·마스킹 확인 (9절 표 #18). 2026-10-23 완료
+6. `./gradlew :apps:commerce-api:check` — Checkstyle·ArchUnit·기존 회귀. **Docker가 멈춰 있어 MySQL이 필요한 전체 회귀는 아직 돌리지 못했다** (13-6절)
 
 이 단계가 끝나면 주문·재고 연결(design.md 9절)로 넘어간다.
 
@@ -571,6 +571,27 @@ Gradle 캐시에 있는 이 프로젝트의 실제 의존성(Spring Web 6.2.5, J
 | 수명 (3건) | reset 범위와 이어지는 키 일련번호, close가 붙잡은 응답을 풀고 처리 스레드를 정리한 뒤 연결 거절, 공유 서버는 하나이고 닫을 수 없음 |
 
 **테스트가 실제로 잡는지 확인한 변경 실험**: `httpServer.setExecutor(executor)`를 지우고 다시 돌리면 "응답을 붙잡으면 … 붙잡은 동안에도 다른 요청은 처리된다" 1건만 실패했다 (20건 중 1건). 실험 뒤 원복하고 다시 확인했다.
+
+### 13-6. adapter 구현 검증 (2026-10-23)
+
+| 테스트 | 건수 | 확인한 것 |
+|---|---|---|
+| `PaymentProviderContractTest` | 21 | 9절 표 #1~#18, 연결 거절(열린 결정 1)을 실제 HTTP로 |
+| `TestPgResponsesTest` | 9 | 4-1·4-4절 해석 규칙과 이유코드 순서, fixture로 만들 수 없는 형식(배열이 아닌 목록, 소수 금액, 소문자 상태) |
+| `PgClientConfigTest` | 3 | `application.yml`의 `payment.pg`가 바인딩되고(시간 단위 포함), adapter가 `PaymentGateway` 빈이며, 회로가 설정값으로 `pgLookup`에 등록된다. DB 없이 PG 설정만 올린다 |
+| `ProviderOrderIdTest`, `PgPaymentRequestTest` | 6 | 주문 번호 변환, 요청 검증, `toString` 카드번호 가림 |
+
+모두 통과했고 skip은 0건이다. `ArchitectureTest`, `checkstyleMain`·`checkstyleTest`도 통과했다.
+
+**구현하며 고친 것: OPEN 유지 테스트 값 200ms → 500ms**
+- 확인하고자 한 것: 500이 계속될 때 5-5절 예대로 1회차 HTTP 3번, 2회차 2번 만에 OPEN, 3회차 0번인가.
+- 결과: 2회차 뒤 상태가 OPEN이 아니라 HALF_OPEN이었고, 2회차 결과가 `CIRCUIT_OPEN`이 아니라 `SERVER_ERROR`였다 (#14~#17 실패).
+- 확인한 것: 2회차의 두 번째 시도에서 회로가 열린 뒤, 재시도가 200ms를 기다리는 동안 OPEN 유지(200ms)가 끝났다. 자동 전환을 꺼 두었으므로 세 번째 시도가 들어온 순간 HALF_OPEN으로 넘어가 실제로 PG에 나갔다. 운영 값(OPEN 10초)에서는 생기지 않는다.
+- 그래서 테스트 값을 재시도 대기 합(300ms)보다 긴 500ms로 바꿨고, 5-4절에 조건을 적었다.
+
+**테스트가 실제로 잡는지 확인한 변경 실험**: 재시도 조건을 `error -> true`(모든 예외 재시도)로 바꾸면 #12의 "404 외 4xx는 HTTP 1번"과 #14의 "3회차는 PG에 묻지 않는다" 2건이 실패했다 (21건 중 2건). 원복하고 다시 확인했다.
+
+**아직 확인하지 않은 것**: Docker Desktop 엔진이 응답하지 않아(`docker version`의 서버 정보가 비고 API가 500) MySQL 테스트 컨테이너가 필요한 `CommerceApiContextTest`와 기존 회귀를 이번에 돌리지 못했다. 전체 Spring 컨텍스트에서 adapter 빈이 함께 올라오는지는 Docker를 켠 뒤 확인한다.
 
 ---
 *이 문서는 구현하며 판단이 바뀌면 그때그때 갱신한다.*

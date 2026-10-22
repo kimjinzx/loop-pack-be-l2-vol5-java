@@ -43,6 +43,16 @@ payment:
     connect-timeout: 500ms
     create-read-timeout: 3s # create timeout은 결과 미확인을 만들므로 조회보다 길게 기다린다
     lookup-read-timeout: 1s # 조회는 다시 물어도 안전하므로 짧게 끊는다
+    lookup-retry: # 조회에만 적용한다. create는 어떤 층에서도 다시 보내지 않는다
+      max-attempts: 3 # 첫 호출 포함. 최악 대기는 3 x 1s + 100ms + 200ms = 약 3.3초
+      initial-wait: 100ms
+      multiplier: 2
+    lookup-circuit-breaker: # 조회 한 경로에만 둔다. 열려도 결제를 실패로 정하지 않는다
+      sliding-window-size: 10 # 호출 수 기준 창
+      minimum-number-of-calls: 5 # 한두 번의 실패로 열리지 않게 한다
+      failure-rate-threshold: 50
+      wait-duration-in-open-state: 10s
+      permitted-calls-in-half-open-state: 2 # 2건 모두 성공해야 닫힌다
 
 ---
 spring:
