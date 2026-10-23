@@ -489,7 +489,7 @@ callback은 실제 controller를 거쳐야 하므로, 업무 테스트는 `callb
 3. ✅ `TestPgPaymentGateway` + `PgProperties` + 설정 — `HTTP_1_1`·`NO_PROXY`로 만든 `HttpClient`, `JsonNode` 해석(4-4절, `TestPgResponses`), create·조회 매핑 (9절 표 #1~#11). 2026-10-23 완료
 4. ✅ 재조회·회로 조립 (9절 표 #12~#17). 2026-10-23 완료
 5. ✅ 로그·마스킹 확인 (9절 표 #18). 2026-10-23 완료
-6. `./gradlew :apps:commerce-api:check` — Checkstyle·ArchUnit·기존 회귀. **Docker가 멈춰 있어 MySQL이 필요한 전체 회귀는 아직 돌리지 못했다** (13-6절)
+6. ✅ `./gradlew :apps:commerce-api:check` — Checkstyle·ArchUnit·기존 회귀. 2026-10-23 351건 실행, 실패 0 (skip 3건은 다른 작업의 옵트인 실험 하네스). 주문 연결 뒤의 검증은 design.md 9-12절
 
 이 단계가 끝나면 주문·재고 연결(design.md 9절)로 넘어간다.
 
@@ -591,7 +591,7 @@ Gradle 캐시에 있는 이 프로젝트의 실제 의존성(Spring Web 6.2.5, J
 
 **테스트가 실제로 잡는지 확인한 변경 실험**: 재시도 조건을 `error -> true`(모든 예외 재시도)로 바꾸면 #12의 "404 외 4xx는 HTTP 1번"과 #14의 "3회차는 PG에 묻지 않는다" 2건이 실패했다 (21건 중 2건). 원복하고 다시 확인했다.
 
-**아직 확인하지 않은 것**: Docker Desktop 엔진이 응답하지 않아(`docker version`의 서버 정보가 비고 API가 500) MySQL 테스트 컨테이너가 필요한 `CommerceApiContextTest`와 기존 회귀를 이번에 돌리지 못했다. 전체 Spring 컨텍스트에서 adapter 빈이 함께 올라오는지는 Docker를 켠 뒤 확인한다.
+**나중에 확인한 것**: 이 시점에는 Docker가 응답하지 않아 MySQL이 필요한 테스트를 돌리지 못했다. 이후 Docker를 켜고 `CommerceApiContextTest`와 기존 회귀를 포함한 전체 `check`를 돌려, adapter 빈이 전체 Spring 컨텍스트에서 함께 올라오는 것을 확인했다 (351건, 실패 0).
 
 ---
 *이 문서는 구현하며 판단이 바뀌면 그때그때 갱신한다.*

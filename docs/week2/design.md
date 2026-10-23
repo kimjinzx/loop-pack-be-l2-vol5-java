@@ -703,7 +703,11 @@ PG 조회는 이 트랜잭션 밖에서 끝내고, 관찰 결과만 넘긴다. �
 | 14 | 확정 실패 반환이 삭제 상품을 되살림 | 모든 컬럼 UPDATE가 낡은 `deleted_at`을 씀 | 잠금 조회로 처음 읽은 뒤 재고만 증가 (7-3절 규칙) | 반환 뒤에도 삭제 상품 비노출 |
 | 15 | 재고 부족인데 PG부터 호출 | 결제는 됐는데 재고 없음 | 확보(TX A)가 PG 호출보다 먼저, 부족하면 PG 0회 | 재고 부족 시 PG 0회 |
 
-### 9-10. 기존 계약·테스트 변경 (구현 전 확인 필요)
+### 9-10. 기존 계약·테스트 변경 (승인 뒤 반영함)
+
+> 2026-10-23에 승인을 받아 아래대로 바꿨다. 지우거나 완화한 기대값은 없다. 계약에서 사라진 세 장면은 새 계약을 검증하는 테스트로 바꿨다.
+> 잔액 부족 409 → "잔액이 주문 금액보다 적어도 PG 결제는 시작되고 잔액은 그대로", 잔액 경쟁 2/3 → "한 사용자의 주문 3건을 동시에 확정해도 모두 결제 대기이고 잔액은 그대로", 충전과 결제 동시 → "충전분만 늘어 12,000원".
+> 이미 시작한 주문의 재확정은 기존 404에서 "같은 요청이면 저장된 상태, 다른 요청이면 409"로 바뀌었다 (9-6절). 이전에 포인트로 확정한 주문은 기존 404를 그대로 둔다.
 
 확정 계약이 "포인트로 즉시 확정"에서 "PG 결제 시작"으로 바뀌므로, 확정을 부르는 기존 테스트 8개 파일의 기대값이 바뀐다. CLAUDE.md 규칙 4·5에 따라 이유와 영향을 적고 확인을 받은 뒤 바꾼다. 검사를 통과시키려고 기대값을 지우거나 완화하지 않고, 같은 의도를 새 계약으로 다시 검증한다.
 
@@ -728,6 +732,54 @@ PG 조회는 이 트랜잭션 밖에서 끝내고, 관찰 결과만 넘긴다. �
 - **같은 키로 다른 카드번호를 보내면 같은 요청으로 본다.** 카드번호를 저장하지 않아 비교할 수 없다. 카드 종류까지만 비교한다.
 - **상시 재조회 스케줄러가 없다.** callback이 유실되면 사용자가 reconcile을 불러야 종결된다.
 - 운영에서는 미완료 결제의 체류 시간, 조회 불가·충돌 건수, 실제 발송 수와 예약 점유량을 봐야 한다. 미확인 기록을 지우거나 서버를 재시작해도 외부 거래는 취소되지 않는다.
+
+
+### 9-12. 구현 뒤 확인 (2026-10-23)
+
+**테스트 결과**
+- `./gradlew :apps:commerce-api:check`: **351건 실행, 실패 0, skip 3.** checkstyle·ArchUnit도 통과했다.
+- skip 3건은 다른 작업의 PG 지연 실험 하네스(`PG_LATENCY_EXPERIMENT=true`일 때만 도는 옵트인)라서 이번 검증에 세지 않았다.
+- 이 실행 뒤에 "PG 호출 중 잠금" 테스트 1건을 더했고, `PaymentIntegrationTest` 16건 통과를 다시 확인했다.
+
+**9-9절 반례를 확인한 테스트**
+
+| # | 반례 | 확인한 테스트 |
+|---|---|---|
+| 1 | 응답 유실 | `PaymentIntegrationTest.LostResponse` — 연결 끊김·timeout·확정 실패 3건 |
+| 2 | 성공 뒤 내부 저장 실패 | `PaymentRecoveryIntegrationTest.InternalFailureAfterExternalResult` — 성공 적용 실패, 반환 도중(변경이 DB로 나간 뒤) 실패 |
+| 3 | 같은 성공 알림·조회가 동시에 | `PaymentCallbackIntegrationTest.ArrivalOrder` — 6개 동시 |
+| 4 | 같은 실패 알림이 여러 번 | `ArrivalOrder`(4개 동시), `PaymentIntegrationTest.RejectedBeforeCreate` — 가용 재고가 5를 넘지 않음 |
+| 5 | 종결 뒤 늦은 응답 | `ArrivalOrder`(callback이 먼저 종결, 늦은 생성 응답), `PaymentAttemptModelTest` |
+| 6 | 같은 주문·같은 키 동시 | `OrderConcurrencyTest` — 시도·예약·확보·create 각 1회 |
+| 7 | 같은 주문에 새 키 | `PaymentIntegrationTest.ConflictingRequests`, `OrderConcurrencyTest`(다른 키 동시) |
+| 8 | 조작한 callback | `PaymentCallbackIntegrationTest.DoesNotTrustCallbackBody` — 실제 controller 경유 |
+| 9 | 다른 주문의 거래 키 | `AmbiguousLookup` — 주문·금액 불일치 |
+| 10 | 같은 주문의 거래 2건 | `AmbiguousLookup` — 둘 다 SUCCESS여도 확정하지 않음 |
+| 11 | 조회 0건·재시작 | `AmbiguousLookup`, `PaymentRecoveryIntegrationTest.AfterRestart` — 자동 재발송 0 |
+| 12 | 회로 OPEN | `PaymentRecoveryIntegrationTest.LookupOutage` — 호출 수 3 → 5 → 5, 회복 뒤 조회 재개 |
+| 13 | PG 호출 중 잠금 보유 | `PaymentIntegrationTest.DuringPgCall` — 아래 변이 4 (이 항목은 처음에 직접 확인하는 테스트가 없어 구현 뒤에 더했다) |
+| 14 | 반환이 삭제 상품을 되살림 | `PaymentIntegrationTest.ExistingFeatures` — 반환 뒤에도 삭제 상태, 성공은 저장된 품목으로 확정 |
+| 15 | 재고 부족인데 PG 호출 | `OrderV1ApiE2ETest`, `OrderTransactionTest` — PG 호출 0회 |
+
+**테스트가 실제로 잡는지 확인한 변이** (운영 코드를 일부러 바꿔 돌리고, 파일 해시로 원복을 확인했다)
+
+| # | 바꾼 것 | 결과 |
+|---|---|---|
+| 1 | 저장된 시도에도 create를 다시 보냄(`sendRequired` 확인 제거) | 2건 실패 — `OrderTransactionTest`, `PaymentIntegrationTest`의 같은 요청 반복 |
+| 2 | TX A의 첫 주문 조회에서 잠금 제거 | 1건 실패 — `OrderConcurrencyTest` 같은 요청 동시 4건: 응답 4 기대, 실제 1. 늦게 온 같은 요청이 "시도 없음"으로 읽어 새 시도를 만들려다 거절된다. 다른 키 동시 테스트는 이 변이에서도 통과한다(성공 1·거절 3으로 결과가 같다) |
+| 3 | 재고 반환에서 상품 revision 증가 제거 | 3건 실패 — revision 기대 2 실제 1, 캐시된 재고 기대 3 실제 0(사용자가 낡은 재고를 본다), 실패 주입 지점 미도달 |
+| 4 | `PaymentFacade.confirm` 전체를 한 트랜잭션으로 감싸 PG 호출이 잠금 안에서 일어남 | 1건 실패 — 관리자 변경이 첫 호출의 PG 대기가 끝날 때까지 막힘 |
+| 5 | `PaymentAttemptModel.applyLookup`의 종결 분기 제거 | 3건 실패 — 같은 성공·실패·반대 결과가 다시 와도 효과가 한 번이어야 하는 테스트 |
+| 6 | `applyCreate`의 종결 보호 제거 | **실패 없음** — 접수·거절·미확인이 각자 종결 상태를 건드리지 않는 조건을 따로 갖고 있어 동작이 같은 중복 보호(동치 변이)다 |
+
+변이 2는 처음 시도가 Docker 중단으로 무효였고(`Could not find a valid Docker environment`, 8건 전부 실패), 실패 원인을 확인한 뒤 다시 해서 위 결과를 얻었다.
+
+**구현하며 설계와 달라진 것**: 거절(`RejectedNoEffect`)은 발송 직후(`REQUESTED`)일 때만 실패로 정한다. 종결 뒤 더 오래된 `PENDING` 관찰은 충돌로 기록하지 않는다. 종결한 시도는 PG를 다시 조회하지 않는다. 고객 응답에는 거래 키·충돌을 담지 않고 관리자 응답에만 담는다. 키 유일 제약 위반은 Facade가 409로 바꾼다. 각각 9-6·9-7절에 반영했다.
+
+**확인하지 못한 것**
+- 실제 PG·네트워크 장애·프로세스 강제 종료는 재현하지 않았다. "발송 기록 뒤 재시작"은 TX A만 부른 뒤 서비스·클라이언트를 새로 만드는 방식으로 대신했다.
+- 처리량·지연은 이 변경으로는 측정하지 않았다.
+- `check` 전체는 Docker가 자주 끊겨 한 번 통과를 확인했다. 그 뒤의 변경은 `PaymentIntegrationTest`의 테스트 1건 추가뿐이다.
 
 ---
 *이 문서는 구현하며 판단이 바뀌면 그때그때 갱신한다 (완성 후 고정하는 문서가 아님).*
