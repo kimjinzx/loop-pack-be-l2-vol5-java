@@ -72,5 +72,106 @@ class OrderModelTest {
             // assert
             assertThat(result.getErrorType()).isEqualTo(ErrorType.CONFLICT);
         }
+
+        @DisplayName("포인트로 확정하면, 결제수단이 POINT로 기록된다.")
+        @Test
+        void recordsPointPaymentMethod_whenConfirmedWithPoint() {
+            // arrange
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+
+            // act
+            order.confirm(20_000L);
+
+            // assert
+            assertThat(order.getPaymentMethod()).isEqualTo(PaymentMethod.POINT);
+        }
+    }
+
+    @DisplayName("PG 결제를 진행할 때, ")
+    @Nested
+    class PgPayment {
+        @DisplayName("DRAFT 주문의 결제를 시작하면, PAYMENT_PENDING이 되고 결제수단은 PG이며 결제액은 아직 없다.")
+        @Test
+        void startsPayment_whenStatusIsDraft() {
+            // arrange
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+
+            // act
+            order.startPgPayment();
+
+            // assert
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_PENDING);
+            assertThat(order.getPaymentMethod()).isEqualTo(PaymentMethod.PG);
+            assertThat(order.getPaidAmount()).isNull();
+        }
+
+        @DisplayName("DRAFT가 아닌 주문의 결제를 시작하면, CONFLICT 예외가 발생한다.")
+        @Test
+        void throwsConflictException_whenStartingPaymentOfNonDraftOrder() {
+            // arrange
+            OrderModel pending = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            pending.startPgPayment();
+            OrderModel confirmed = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            confirmed.confirm(20_000L);
+
+            // act
+            CoreException afterPending = assertThrows(CoreException.class, pending::startPgPayment);
+            CoreException afterConfirm = assertThrows(CoreException.class, confirmed::startPgPayment);
+
+            // assert
+            assertThat(afterPending.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+            assertThat(afterConfirm.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+        }
+
+        @DisplayName("결제 결과를 기다리는 주문이 성공하면, CONFIRMED로 바뀌고 결제액이 기록되며 결제수단은 그대로 PG다.")
+        @Test
+        void completesPayment_whenPending() {
+            // arrange
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            order.startPgPayment();
+
+            // act
+            order.completePgPayment(20_000L);
+
+            // assert
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+            assertThat(order.getPaidAmount()).isEqualTo(20_000L);
+            assertThat(order.getPaymentMethod()).isEqualTo(PaymentMethod.PG);
+        }
+
+        @DisplayName("결제 결과를 기다리는 주문이 확정 실패하면, PAYMENT_FAILED가 되고 결제액은 없다.")
+        @Test
+        void failsPayment_whenPending() {
+            // arrange
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            order.startPgPayment();
+
+            // act
+            order.failPgPayment();
+
+            // assert
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.PAYMENT_FAILED);
+            assertThat(order.getPaidAmount()).isNull();
+        }
+
+        @DisplayName("결제 결과를 기다리는 주문이 아니면, 성공·실패를 적용할 수 없고 CONFLICT 예외가 발생한다.")
+        @Test
+        void throwsConflictException_whenOrderIsNotWaitingForPayment() {
+            // arrange
+            OrderModel draft = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            OrderModel failed = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            failed.startPgPayment();
+            failed.failPgPayment();
+
+            // act
+            CoreException completeDraft = assertThrows(CoreException.class, () -> draft.completePgPayment(20_000L));
+            CoreException failDraft = assertThrows(CoreException.class, draft::failPgPayment);
+            CoreException completeFailed = assertThrows(CoreException.class, () -> failed.completePgPayment(20_000L));
+
+            // assert
+            assertThat(completeDraft.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+            assertThat(failDraft.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+            assertThat(completeFailed.getErrorType()).isEqualTo(ErrorType.CONFLICT);
+        }
     }
 }
