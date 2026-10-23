@@ -15,9 +15,12 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Duration;
 import java.util.List;
+import java.util.concurrent.atomic.AtomicReference;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.awaitility.Awaitility.await;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.csrf;
 import static org.springframework.security.test.web.servlet.request.SecurityMockMvcRequestPostProcessors.user;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.delete;
@@ -253,6 +256,48 @@ class PaymentIntegrationTest extends PaymentScenarioTestBase {
             assertThat(pg.createCount()).as("발송").isEqualTo(1);
             assertThat(stock()).as("재고는 한 번만 확보").isEqualTo(INITIAL_STOCK - ORDER_QUANTITY);
             assertThat(orderFacade.getOrderForAdmin(otherOrderId).status()).isEqualTo(OrderStatus.DRAFT);
+        }
+    }
+
+    @DisplayName("PG 호출을 기다리는 동안, ")
+    @Nested
+    class DuringPgCall {
+
+        @DisplayName("DB 트랜잭션과 재고 잠금을 잡고 있지 않아, 같은 상품의 관리자 변경과 다른 주문의 확정이 PG 응답을 기다리지 않고 끝난다.")
+        @Test
+        void holdsNoLocks_whileWaitingForPgResponse() throws Exception {
+            // arrange: 첫 주문의 PG 응답을 붙잡아 호출이 끝나지 않게 한다. 같은 상품을 담은 다른 주문을 하나 더 만든다
+            Long secondOrderId = saveDraft(USER_ID);
+            pg.holdNextCreateResponse();
+            AtomicReference<Throwable> firstFailure = new AtomicReference<>();
+            Thread first = new Thread(() -> {
+                try {
+                    PaymentTestSupport.startPayment(paymentFacade, orderId, USER_ID);
+                } catch (Throwable e) {
+                    firstFailure.set(e);
+                }
+            }, "first-payment");
+            first.start();
+            await().atMost(Duration.ofSeconds(5)).until(() -> pg.transactionCount() == 1);
+
+            try {
+                // act: 첫 호출이 PG 응답을 기다리는 동안, 상품 행 잠금이 필요한 두 작업을 한다
+                long startedAt = System.nanoTime();
+                productFacade.changeStock(product.getId(), 10);
+                confirm(secondOrderId, USER_ID, PaymentTestSupport.attemptKeyOf(secondOrderId), PaymentTestSupport.CARD_TYPE)
+                    .andExpect(status().isAccepted());
+                Duration elapsed = Duration.ofNanos(System.nanoTime() - startedAt);
+
+                // assert: 첫 호출은 아직 기다리는 중인데, 두 작업은 그 응답(create 읽기 대기 3초)을 기다리지 않고 끝났다
+                assertThat(first.isAlive()).as("첫 호출은 아직 PG 응답을 기다린다").isTrue();
+                assertThat(elapsed).as("잠금을 잡고 있었다면 첫 호출이 끝날 때까지 기다린다").isLessThan(Duration.ofMillis(1500));
+                assertThat(pg.createCount()).as("둘째 주문의 create가 첫 응답을 기다리지 않고 PG에 닿았다").isEqualTo(2);
+                assertThat(stock()).as("관리자 설정(10) 뒤 둘째 주문이 2개 확보").isEqualTo(10 - ORDER_QUANTITY);
+            } finally {
+                pg.releaseHeld();
+                first.join(Duration.ofSeconds(10).toMillis());
+            }
+            assertThat(firstFailure.get()).isNull();
         }
     }
 
