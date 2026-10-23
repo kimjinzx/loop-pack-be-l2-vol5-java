@@ -628,13 +628,13 @@ POST /orders/{id}/payment/reconcile           POST /payments/callback
 
 | method | path | 입력 | 성공 | 대표 오류 |
 |---|---|---|---|---|
-| POST | `/api/v1/orders/{orderId}/confirm` | (사용자 식별), `paymentAttemptKey`, `cardType`, `cardNo` (금액은 받지 않고 저장된 주문 합계로 정함) | 결과 대기·미확인이면 **202**, 종결(`CONFIRMED`·`PAYMENT_FAILED`)이면 **200**. 본문은 주문·결제 상태와 reconcile 경로 | 400 입력 오류·재고 부족, 404 본인 소유 아님·없음·이미 POINT로 확정·삭제 상품, 409 상충하는 시도 |
+| POST | `/api/v1/orders/{orderId}/confirm` | (사용자 식별), `paymentAttemptKey`, `cardType`, `cardNo` (금액은 받지 않고 저장된 주문 합계로 정함) | 결과 대기·미확인이면 **202**, 종결(`CONFIRMED`·`PAYMENT_FAILED`)이면 **200**. 본문은 주문·결제 상태와 조회 경로(저장된 상태를 읽는 `orderPath`, PG 거래를 다시 확인하는 `reconcilePath`) | 400 입력 오류·재고 부족, 404 본인 소유 아님·없음·이미 POINT로 확정·삭제 상품, 409 상충하는 시도 |
 | POST | `/api/v1/orders/{orderId}/payment/reconcile` | (사용자 식별) | 위와 같음. 이미 종결이면 조회 없이 200 | 404 본인 소유 아님·PG 시도 없음 |
-| POST | `/api/v1/payments/callback` | `transactionKey`, `orderId`(= providerOrderId), `status`(받지만 쓰지 않음) | 처리 후 `orderId`·`orderStatus`·`paymentStatus`만 (202·200 규칙 같음). PG가 볼 필요 없는 품목·금액은 담지 않는다 | 400 거래 키·주문 번호가 비어 있음, 404 해당 시도 없음 (상태 변화 없음) |
+| POST | `/api/v1/payments/callback` | `transactionKey`, `orderId`(= providerOrderId, `providerOrderId` 이름으로도 받음), `status`(받지만 쓰지 않음) | 처리 후 `orderId`·`orderStatus`·`paymentStatus`만 (202·200 규칙 같음). PG가 볼 필요 없는 품목·금액은 담지 않는다 | 400 거래 키·주문 번호가 비어 있음, 404 해당 시도 없음 (상태 변화 없음) |
 | GET | `/api/v1/orders/{orderId}`, 관리자 `/api-admin/v1/orders/{orderId}` | — | 기존 필드 + 결제수단, 결제 시도 상태, 최종 결과 | 기존과 같음 |
 
 **응답에 담는 결제 정보** (구현)
-- 고객: `paymentMethod`, `payment.status`, 결제 결과를 기다리거나 모를 때의 `reconcilePath`, 이번 호출에서 PG에 물었지만 확인하지 못했을 때의 `payment.lookupUnavailable: true`. 거래 키·충돌·결과 미확인 이유 같은 PG 내부 값은 담지 않는다.
+- 고객: `paymentMethod`, `payment.status`, 결제 결과를 기다리거나 모를 때의 `orderPath`(GET, 저장된 상태 조회)·`reconcilePath`(POST, PG 거래 확인), 이번 호출에서 PG에 물었지만 확인하지 못했을 때의 `payment.lookupUnavailable: true`. 거래 키·충돌·결과 미확인 이유 같은 PG 내부 값은 담지 않는다.
 - 관리자: 위에 더해 `payment.transactionKey`, `payment.unknownReason`, `payment.conflict`. 운영자가 미확인·충돌 결제를 판단하는 근거다.
 - DRAFT 주문과 이전 POINT 주문에는 `payment`가 없다. 카드번호는 어디에도 없다.
 - `lookupUnavailable`은 저장된 상태가 아니라 그 응답에만 해당한다. 결제를 실패로 정했다는 뜻이 아니고, 상태는 마지막으로 아는 그대로다.
@@ -680,6 +680,7 @@ PG 조회는 이 트랜잭션 밖에서 끝내고, 관찰 결과만 넘긴다. �
 | 삭제 상품 | 새 조회·새 주문에서는 계속 빠진다. 삭제 전에 확보를 마친 `PAYMENT_PENDING` 주문은 저장된 품목·금액·예약으로 마무리한다. 삭제 뒤 새로 확정하는 DRAFT는 기존대로 404다. 물리 삭제는 없다 (6절) |
 | 4주차 캐시 | 상품 캐시가 재고를 담으므로, 확보(TX A)와 반환(확정 실패 TX B)에서 품목의 상품 revision을 올린다. 성공(소비)은 재고가 바뀌지 않아 올리지 않는다 |
 | 관리자·고객 조회 | 결제수단(POINT·PG), 시도 상태, 최종 결과를 더한다. 카드번호는 어디에도 없다 |
+| 이전 POINT 주문 | 결제수단 컬럼이 생기기 전에 확정한 주문은 저장된 값이 비어 있다. 읽을 때 확정된 주문의 빈 값을 POINT로 보정하고 저장된 값은 바꾸지 않는다. 마이그레이션 도구가 없어 기존 행을 고치지 않는다 |
 
 ### 9-9. AI 반례 검토 (구현 전)
 
@@ -775,6 +776,11 @@ PG 조회는 이 트랜잭션 밖에서 끝내고, 관찰 결과만 넘긴다. �
 변이 2는 처음 시도가 Docker 중단으로 무효였고(`Could not find a valid Docker environment`, 8건 전부 실패), 실패 원인을 확인한 뒤 다시 해서 위 결과를 얻었다.
 
 **구현하며 설계와 달라진 것**: 거절(`RejectedNoEffect`)은 발송 직후(`REQUESTED`)일 때만 실패로 정한다. 종결 뒤 더 오래된 `PENDING` 관찰은 충돌로 기록하지 않는다. 종결한 시도는 PG를 다시 조회하지 않는다. 고객 응답에는 거래 키·충돌을 담지 않고 관리자 응답에만 담는다. 키 유일 제약 위반은 Facade가 409로 바꾼다. 각각 9-6·9-7절에 반영했다.
+
+**검토에서 찾아 고친 것** (과제 원문과 문장 단위로 다시 대조해 찾았고, 위 테스트를 돌린 뒤에 고쳤다)
+- callback 본문의 주문 필드: 과제 문장은 `providerOrderId`라고 부르는데 `orderId`만 받아 이름이 다르면 400이 됐다. 두 이름을 모두 받게 했다 (`PaymentV1DtoTest`, 별칭을 빼면 실패 확인).
+- 이전 POINT 확정 주문: 결제수단이 비어 보였다. 읽을 때 POINT로 보정했다 (`OrderModelTest.LegacyPaymentMethod`, 보정을 빼면 실패 확인).
+- 202 응답의 조회 경로: reconcile 경로만 주던 것에 주문 조회 경로를 더했다 (`OrderV1DtoTest`, 빼면 실패 확인).
 
 **확인하지 못한 것**
 - 실제 PG·네트워크 장애·프로세스 강제 종료는 재현하지 않았다. "발송 기록 뒤 재시작"은 TX A만 부른 뒤 서비스·클라이언트를 새로 만드는 방식으로 대신했다.

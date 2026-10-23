@@ -1,6 +1,6 @@
 # 테스트 PG 계약과 결제 adapter 명세 — Week 5
 
-> 상태: **초안 v2 (구현 전, 2026-10-20 검증 반영 — 13절)**. 이 문서는 PG와 맞닿는 경계만 다룬다. 결제 시도·재고 예약 테이블, 주문 상태 전이, TX A/B, confirm·reconcile·callback API는 [`design.md`](../week2/design.md) 9절에 이어서 쓴다.
+> 상태: **구현 완료 (2026-10-23)**. 초안은 2026-10-20에 쓰고 같은 날 검증했으며(13절), 구현하며 달라진 점은 13-6절과 design.md 9-12절에 있다. 이 문서는 PG와 맞닿는 경계만 다룬다. 결제 시도·재고 예약 테이블, 주문 상태 전이, TX A/B, confirm·reconcile·callback API는 [`design.md`](../week2/design.md) 9절에 이어서 쓴다.
 
 ## 0. 범위
 
@@ -116,7 +116,7 @@ Content-Type: application/json
 { "transactionKey": "TEST-TX-0001", "orderId": "LP-ORD-0000000042", "status": "SUCCESS" }
 ```
 
-- `orderId`는 다른 PG 메시지와 같은 이름을 쓰며 값은 `providerOrderId`다.
+- `orderId`는 다른 PG 메시지와 같은 이름을 쓰며 값은 `providerOrderId`다. 과제 문장이 알림 본문을 "providerOrderId, transactionKey, status를 전달"한다고 설명하므로, commerce의 callback 엔드포인트는 `providerOrderId` 이름으로 와도 같은 값으로 받는다 (`@JsonAlias`, `PaymentV1DtoTest`). fixture의 `callbackPayload`는 `orderId`로 만든다.
 - 알림은 **확인 요청의 계기**일 뿐이다. 본문의 `status`로 주문을 바꾸지 않고, commerce는 `transactionKey`로 3-3절을 다시 조회해 확인한다 (design.md 9절).
 - 알림은 유실·중복·지연·순서 변경이 가능하다고 가정한다. fixture는 자동으로 보내지 않고, 테스트가 원하는 시점에 원하는 횟수만큼 만든다 (8-2절).
 
@@ -471,16 +471,18 @@ callback은 실제 controller를 거쳐야 하므로, 업무 테스트는 `callb
 
 이미 종결된 시도에는 어떤 관찰도 상태를 되돌리거나 덮어쓰지 않는다.
 
-## 11. 열린 결정 (확인 필요)
+## 11. 결정 사항 (열린 결정의 결과)
 
-| # | 질문 | 기본안 | 바꾸면 생기는 영향 |
-|---|---|---|---|
-| 1 | 연결 수립 실패(요청이 PG에 닿지 않은 것이 확실한 경우)도 UNKNOWN인가? | **UNKNOWN** — 과제가 나열한 "효과 0건 증거"는 정확한 422뿐이다 | FAILED로 두면 PG가 내려간 동안의 주문이 예약을 바로 반환받지만, "연결 실패"와 "보낸 뒤 끊김"을 클라이언트 예외만으로 구분하는 데 기대게 된다 |
-| 2 | create 202 본문의 `status`를 판단에 쓰는가? | **쓰지 않는다** — 접수 사실과 `transactionKey`만 쓰고 최종은 조회로 확인 | 쓰면 create 응답의 `SUCCESS`로 바로 확정할 수 있지만, 생성 수락과 최종 성공을 구분하라는 요구와 멀어진다 |
-| 3 | callback 경로 검증을 MockMvc로 하는가, 실제 포트로 하는가? | **MockMvc** — 기존 테스트 방식과 같고 실제 controller를 거친다 | 실제 포트(`RANDOM_PORT`)면 fixture가 HTTP로 직접 알릴 수 있지만, 기존 MockMvc 사용자·관리자 설정과 다른 테스트 구성이 하나 더 생긴다 |
-| 4 | 회로 차단기·재조회를 Resilience4j로 하는가? | **Resilience4j 코드 조립** (5-5절) | 직접 구현하면 의존성은 없지만 상태 전이·표본 계산을 직접 검증해야 한다 |
-| 5 | create에도 별도 회로를 두는가? | **두지 않는다** — 과제 범위는 조회 한 경로 | PG 장애 동안 confirm마다 create timeout(3s)만큼 기다리는 비용이 남는다 |
-| 6 | callback 본문의 주문 필드 이름은? | **`orderId`** — 생성·조회 응답과 같은 PG 쪽 이름을 쓰고, 값은 `providerOrderId`다 (3-5절) | 과제 문장("providerOrderId, transactionKey, status를 전달")을 필드 이름 그대로 읽어 `providerOrderId`로 둘 수도 있다. 그러면 PG 메시지 안에서 같은 값의 이름이 둘이 된다 |
+구현을 시작하기 전에 정하지 못한 6개 항목이다. 항목별로 따로 확정받지는 않았고, 기본안대로 구현해 달라는 요청에 따라 기본안으로 진행했다. 다른 선택을 하면 아래 "바꾸면 생기는 영향"이 생긴다.
+
+| # | 질문 | 결정 (구현) | 확인한 곳 | 바꾸면 생기는 영향 |
+|---|---|---|---|---|
+| 1 | 연결 수립 실패(요청이 PG에 닿지 않은 것이 확실한 경우)도 UNKNOWN인가? | **UNKNOWN** — 과제가 나열한 "효과 0건 증거"는 정확한 422뿐이다 | `PaymentProviderContractTest` — PG가 내려가 있어도 `CONNECTION_LOST` 결과 미확인 | FAILED로 두면 PG가 내려간 동안의 주문이 예약을 바로 반환받지만, "연결 실패"와 "보낸 뒤 끊김"을 클라이언트 예외만으로 구분하는 데 기대게 된다 |
+| 2 | create 202 본문의 `status`를 판단에 쓰는가? | **쓰지 않는다** — 접수 사실과 `transactionKey`만 쓰고 최종은 조회로 확인 | `TestPgResponsesTest` — 202 본문이 `SUCCESS`여도 접수로만 본다 | 쓰면 create 응답의 `SUCCESS`로 바로 확정할 수 있지만, 생성 수락과 최종 성공을 구분하라는 요구와 멀어진다 |
+| 3 | callback 경로 검증을 MockMvc로 하는가, 실제 포트로 하는가? | **MockMvc** — 기존 테스트 방식과 같고 실제 controller를 거친다 | `PaymentCallbackIntegrationTest` | 실제 포트(`RANDOM_PORT`)면 fixture가 HTTP로 직접 알릴 수 있지만, 기존 MockMvc 사용자·관리자 설정과 다른 테스트 구성이 하나 더 생긴다 |
+| 4 | 회로 차단기·재조회를 Resilience4j로 하는가? | **Resilience4j 코드 조립** (5-5절) | `PaymentProviderContractTest`(재조회·회로 #12~#17), `PgClientConfigTest` | 직접 구현하면 의존성은 없지만 상태 전이·표본 계산을 직접 검증해야 한다 |
+| 5 | create에도 별도 회로를 두는가? | **두지 않는다** — 과제 범위는 조회 한 경로 | `PaymentProviderContractTest` #17 — 조회 회로가 열려 있어도 create는 PG에 도달 | PG 장애 동안 confirm마다 create timeout(3s)만큼 기다리는 비용이 남는다 |
+| 6 | callback 본문의 주문 필드 이름은? | **`orderId`를 기본으로, `providerOrderId`도 같은 값으로 받는다** (3-5절). 처음에는 `orderId`만 받았으나, 구현 뒤 과제 원문과 대조하다가 `providerOrderId`로 보낸 본문이 `orderId=null`이 되어 400이 되는 것을 확인해 별칭을 더했다 | `PaymentV1DtoTest` — 두 이름 모두 같은 값으로 읽힌다 | 한 이름만 받으면 PG 메시지 안에서 같은 값의 이름이 하나로 통일되지만, 과제 문장과 다른 이름으로 오는 알림을 거절하게 된다 |
 
 ## 12. 구현 순서 (PG 단계)
 
