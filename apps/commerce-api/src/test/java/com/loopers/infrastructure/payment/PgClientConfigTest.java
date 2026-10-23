@@ -31,7 +31,8 @@ class PgClientConfigTest {
     @Test
     void bindsPaymentPgProperties() {
         // assert
-        assertThat(properties.baseUrl()).isEqualTo("http://127.0.0.1:8082");
+        // 주소는 다른 테스트가 같은 JVM에서 공유 테스트 PG의 임의 포트로 덮어쓸 수 있어, 고정한 로컬 주소(127.0.0.1)인지만 확인한다
+        assertThat(properties.baseUrl()).startsWith("http://127.0.0.1:");
         assertThat(properties.callbackUrl()).isEqualTo("http://127.0.0.1:8080/api/v1/payments/callback");
         assertThat(properties.providerUserId()).isEqualTo("135135");
         assertThat(properties.connectTimeout()).isEqualTo(Duration.ofMillis(500));
