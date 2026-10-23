@@ -31,6 +31,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.ResultActions;
 
@@ -91,6 +92,9 @@ abstract class PaymentScenarioTestBase {
     protected StockReservationJpaRepository stockReservationJpaRepository;
 
     @Autowired
+    protected JdbcTemplate jdbcTemplate;
+
+    @Autowired
     private DatabaseCleanUp databaseCleanUp;
 
     protected final TestPgServer pg = TestPgServer.shared();
@@ -141,6 +145,12 @@ abstract class PaymentScenarioTestBase {
     /** PG가 보내는 결과 알림. 고객 식별 헤더 없이 보낸다. */
     protected ResultActions callback(String transactionKey, String providerOrderId, String status) throws Exception {
         String body = "{\"transactionKey\":\"" + transactionKey + "\",\"orderId\":\"" + providerOrderId + "\",\"status\":\"" + status + "\"}";
+        return mvc.perform(post("/api/v1/payments/callback").contentType(MediaType.APPLICATION_JSON).content(body));
+    }
+
+    /** 과제 문장이 알림 본문을 설명하는 이름(providerOrderId)으로 보낸 알림. 같은 값으로 받아야 한다. */
+    protected ResultActions callbackWithProviderOrderIdName(String transactionKey, String providerOrderId, String status) throws Exception {
+        String body = "{\"transactionKey\":\"" + transactionKey + "\",\"providerOrderId\":\"" + providerOrderId + "\",\"status\":\"" + status + "\"}";
         return mvc.perform(post("/api/v1/payments/callback").contentType(MediaType.APPLICATION_JSON).content(body));
     }
 

@@ -128,6 +128,7 @@ class OrderV1ApiE2ETest {
             assertThat(confirmResponse.getBody().data().status().name()).isEqualTo("PAYMENT_PENDING");
             assertThat(confirmResponse.getBody().data().paymentMethod().name()).isEqualTo("PG");
             assertThat(confirmResponse.getBody().data().reconcilePath()).isEqualTo("/api/v1/orders/" + orderId + "/payment/reconcile");
+            assertThat(confirmResponse.getBody().data().orderPath()).isEqualTo("/api/v1/orders/" + orderId);
             assertThat(balanceWhilePending).isEqualTo(10_000L);
             assertThat(stockWhilePending).isEqualTo(4);
 
@@ -135,6 +136,7 @@ class OrderV1ApiE2ETest {
             assertThat(reconcileResponse.getBody().data().status().name()).isEqualTo("CONFIRMED");
             assertThat(reconcileResponse.getBody().data().paidAmount()).isEqualTo(7_000L);
             assertThat(reconcileResponse.getBody().data().reconcilePath()).isNull();
+            assertThat(reconcileResponse.getBody().data().orderPath()).isNull();
             assertThat(getBalance(1L)).isEqualTo(10_000L);
 
             ProductModel afterConfirm = productJpaRepository.findById(product.getId()).orElseThrow();

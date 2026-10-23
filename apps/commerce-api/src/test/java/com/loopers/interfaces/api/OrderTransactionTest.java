@@ -139,7 +139,8 @@ class OrderTransactionTest {
             .andExpect(status().isAccepted())
             .andExpect(jsonPath("$.data.status").value("PAYMENT_PENDING"))
             .andExpect(jsonPath("$.data.paymentMethod").value("PG"))
-            .andExpect(jsonPath("$.data.reconcilePath").value("/api/v1/orders/" + draftOrderId + "/payment/reconcile"));
+            .andExpect(jsonPath("$.data.reconcilePath").value("/api/v1/orders/" + draftOrderId + "/payment/reconcile"))
+            .andExpect(jsonPath("$.data.orderPath").value("/api/v1/orders/" + draftOrderId));
 
         // assert: 시작 직후 — 품목별로 확보한 재고, 그대로인 잔액, PG 거래 1건
         assertThat(stockOf(runner)).isEqualTo(3);

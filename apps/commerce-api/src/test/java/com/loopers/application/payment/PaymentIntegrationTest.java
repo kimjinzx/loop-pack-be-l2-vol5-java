@@ -64,8 +64,13 @@ class PaymentIntegrationTest extends PaymentScenarioTestBase {
         @Test
         void keepsOrderPending_untilLookupConfirmsSuccess() throws Exception {
             // act: PG가 아직 처리 중일 때
-            confirm().andExpect(status().isAccepted()).andExpect(jsonPath("$.data.status").value("PAYMENT_PENDING"));
-            reconcile().andExpect(status().isAccepted()).andExpect(jsonPath("$.data.status").value("PAYMENT_PENDING"));
+            confirm().andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.status").value("PAYMENT_PENDING"))
+                .andExpect(jsonPath("$.data.orderPath").value("/api/v1/orders/" + orderId))
+                .andExpect(jsonPath("$.data.reconcilePath").value("/api/v1/orders/" + orderId + "/payment/reconcile"));
+            reconcile().andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.status").value("PAYMENT_PENDING"))
+                .andExpect(jsonPath("$.data.orderPath").value("/api/v1/orders/" + orderId));
 
             // assert: 접수와 처리 중 확인 모두 확정이 아니다
             assertThat(order().status()).isEqualTo(OrderStatus.PAYMENT_PENDING);
@@ -76,7 +81,10 @@ class PaymentIntegrationTest extends PaymentScenarioTestBase {
 
             // act: PG가 성공으로 끝낸 뒤
             pgCompletes(TestPgStatus.SUCCESS);
-            reconcile().andExpect(status().isOk()).andExpect(jsonPath("$.data.status").value("CONFIRMED"));
+            reconcile().andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.status").value("CONFIRMED"))
+                .andExpect(jsonPath("$.data.orderPath").doesNotExist())
+                .andExpect(jsonPath("$.data.reconcilePath").doesNotExist());
 
             // assert
             assertThat(order().status()).isEqualTo(OrderStatus.CONFIRMED);
@@ -323,6 +331,32 @@ class PaymentIntegrationTest extends PaymentScenarioTestBase {
                 .andExpect(jsonPath("$.data.payment").doesNotExist());
             mvc.perform(get("/api/v1/orders/" + pastOrderId).header("X-USER-ID", OTHER_USER_ID))
                 .andExpect(status().isNotFound());
+        }
+
+        @DisplayName("결제수단 컬럼이 비어 있는(NULL) 이전 확정 주문도, 고객·관리자 조회에서 POINT로 보이고 DB 값은 바뀌지 않는다.")
+        @Test
+        void showsPoint_whenLegacyConfirmedOrderHasNullPaymentMethod() throws Exception {
+            // arrange: 결제수단 컬럼이 생기기 전에 확정한 행을 흉내 낸다 (DB 값을 직접 NULL로 만든다)
+            OrderModel past = new OrderModel(USER_ID, List.of(new OrderItem(product.getId(), 1, UNIT_PRICE)));
+            past.confirm(UNIT_PRICE);
+            Long pastOrderId = orderJpaRepository.save(past).getId();
+            jdbcTemplate.update("update orders set payment_method = null where id = ?", pastOrderId);
+            assertThat(storedPaymentMethod(pastOrderId)).as("DB에는 값이 비어 있다").isNull();
+
+            // act & assert
+            mvc.perform(get("/api/v1/orders/" + pastOrderId).header("X-USER-ID", USER_ID))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.paymentMethod").value("POINT"))
+                .andExpect(jsonPath("$.data.paidAmount").value(UNIT_PRICE))
+                .andExpect(jsonPath("$.data.payment").doesNotExist());
+            mvc.perform(get("/api-admin/v1/orders/" + pastOrderId).with(user("admin").roles("ADMIN")))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.paymentMethod").value("POINT"));
+            assertThat(storedPaymentMethod(pastOrderId)).as("읽을 때만 보정하고 저장된 값은 바꾸지 않는다").isNull();
+        }
+
+        private String storedPaymentMethod(Long targetOrderId) {
+            return jdbcTemplate.queryForObject("select payment_method from orders where id = ?", String.class, targetOrderId);
         }
 
         @DisplayName("재고를 확보한 뒤 상품이 삭제돼도, 저장된 품목으로 성공을 마무리하고 확정 실패 반환은 삭제 상품을 다시 노출하지 않는다.")

@@ -13,6 +13,7 @@ import com.loopers.support.pg.TestPgTransaction;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.http.MediaType;
 
 import java.time.Duration;
 import java.util.ArrayList;
@@ -20,6 +21,7 @@ import java.util.List;
 import java.util.concurrent.Callable;
 
 import static org.assertj.core.api.Assertions.assertThat;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.post;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.jsonPath;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 
@@ -154,6 +156,62 @@ class PaymentCallbackIntegrationTest extends PaymentScenarioTestBase {
             assertThat(order().status()).isEqualTo(OrderStatus.PAYMENT_FAILED);
             assertThat(reservation()).isEqualTo(ReservationStatus.RELEASED);
             assertThat(stock()).as("4번 반환했다면 13").isEqualTo(INITIAL_STOCK);
+        }
+    }
+
+    @DisplayName("알림 본문의 PG 주문 번호 이름이 orderId이든 providerOrderId이든, ")
+    @Nested
+    class FieldNames {
+
+        @DisplayName("providerOrderId로 보낸 알림도 같은 거래를 조회해 같은 결과로 확정한다.")
+        @Test
+        void appliesSameResult_whenBodyUsesProviderOrderIdName() throws Exception {
+            // arrange
+            confirm().andExpect(status().isAccepted());
+            pgCompletes(TestPgStatus.SUCCESS);
+            TestPgTransaction transaction = pgTransaction();
+
+            // act
+            callbackWithProviderOrderIdName(transaction.transactionKey(), transaction.orderId(), "SUCCESS")
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.data.orderStatus").value("CONFIRMED"))
+                .andExpect(jsonPath("$.data.paymentStatus").value("SUCCESS"));
+
+            // assert
+            assertThat(order().status()).isEqualTo(OrderStatus.CONFIRMED);
+            assertThat(reservation()).isEqualTo(ReservationStatus.CONSUMED);
+            assertThat(stock()).isEqualTo(INITIAL_STOCK - ORDER_QUANTITY);
+        }
+
+        @DisplayName("providerOrderId로 보낸 알림이어도 본문을 믿지 않는다. PG가 PENDING이면 SUCCESS라고 적혀 있어도 확정하지 않는다.")
+        @Test
+        void stillDoesNotTrustBody_whenBodyUsesProviderOrderIdName() throws Exception {
+            // arrange
+            confirm().andExpect(status().isAccepted());
+            TestPgTransaction transaction = pgTransaction();
+
+            // act
+            callbackWithProviderOrderIdName(transaction.transactionKey(), transaction.orderId(), "SUCCESS")
+                .andExpect(status().isAccepted())
+                .andExpect(jsonPath("$.data.orderStatus").value("PAYMENT_PENDING"));
+
+            // assert
+            assertThat(order().status()).isEqualTo(OrderStatus.PAYMENT_PENDING);
+            assertThat(reservation()).isEqualTo(ReservationStatus.RESERVED);
+        }
+
+        @DisplayName("두 이름이 모두 없으면 400이고 아무것도 바뀌지 않는다.")
+        @Test
+        void rejects_whenNeitherNameIsPresent() throws Exception {
+            // arrange
+            confirm().andExpect(status().isAccepted());
+
+            // act & assert
+            mvc.perform(post("/api/v1/payments/callback")
+                    .contentType(MediaType.APPLICATION_JSON)
+                    .content("{\"transactionKey\":\"TEST-TX-0001\",\"status\":\"SUCCESS\"}"))
+                .andExpect(status().isBadRequest());
+            assertThat(order().status()).isEqualTo(OrderStatus.PAYMENT_PENDING);
         }
     }
 
