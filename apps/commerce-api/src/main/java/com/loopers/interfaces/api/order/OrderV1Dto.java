@@ -44,7 +44,8 @@ public class OrderV1Dto {
 
     /**
      * @param payment       PG 결제 시도가 없으면(DRAFT, 이전 POINT 주문) 비어 있다
-     * @param reconcilePath 결제 결과를 기다리거나 모르는 주문에서만, 결과를 다시 확인할 경로를 알린다
+     * @param orderPath     결제 결과를 기다리거나 모르는 주문에서만, 저장된 주문·결제 상태를 조회할 경로를 알린다 (GET, 새 결제 요청을 만들지 않는다)
+     * @param reconcilePath 같은 주문에서만, PG의 기존 거래를 조회해 결과를 확인·적용할 경로를 알린다 (POST)
      */
     public record OrderResponse(
         Long id,
@@ -54,9 +55,11 @@ public class OrderV1Dto {
         Long paidAmount,
         PaymentMethod paymentMethod,
         PaymentResponse payment,
+        String orderPath,
         String reconcilePath
     ) {
         public static OrderResponse from(OrderInfo info) {
+            boolean waiting = info.status() == OrderStatus.PAYMENT_PENDING;
             return new OrderResponse(
                 info.id(),
                 info.status(),
@@ -65,7 +68,8 @@ public class OrderV1Dto {
                 info.paidAmount(),
                 info.paymentMethod(),
                 info.payment() == null ? null : PaymentResponse.from(info.payment()),
-                info.status() == OrderStatus.PAYMENT_PENDING ? "/api/v1/orders/" + info.id() + "/payment/reconcile" : null
+                waiting ? "/api/v1/orders/" + info.id() : null,
+                waiting ? "/api/v1/orders/" + info.id() + "/payment/reconcile" : null
             );
         }
     }
