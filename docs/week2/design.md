@@ -604,7 +604,7 @@ POST /orders/{id}/payment/reconcile           POST /payments/callback
  TX B   applyObservation(시도, 조회 관찰)       TX B   applyObservation(시도, 조회 관찰)
 ```
 
-- **발송 권한은 TX A의 commit이다.** 같은 주문의 동시 확정은 주문 잠금에서 줄을 서고, 늦게 온 요청은 잠금 뒤 이미 생긴 시도를 보고 저장된 상태를 돌려준다. PG POST는 하지 않는다. 마지막 방어선은 `order_id`·`attempt_key` 유일 제약이다.
+- **발송 권한은 TX A의 commit이다.** 같은 주문의 동시 확정은 주문 잠금에서 줄을 서고, 늦게 온 요청은 잠금 뒤 이미 생긴 시도를 보고 저장된 상태를 돌려준다. PG POST는 하지 않는다. 마지막 방어선은 `order_id`·`attempt_key` 유일 제약이다. 서로 다른 두 주문이 같은 키를 동시에 쓰면 뒤늦은 쪽의 TX A가 유일 제약 위반으로 통째로 rollback되고, Facade가 이를 409로 바꿔 알린다(트랜잭션 밖이라 예외를 삼키지 않고 변환만 한다).
 - **TX B가 rollback되면 아무것도 반영되지 않는다.** 외부 성공 뒤 내부 저장이 실패해도, 같은 거래를 다시 조회해서(reconcile·callback) 한 번 확정할 수 있다. create는 다시 보내지 않는다.
 - 트랜잭션을 나누는 위치는 application의 결제 Facade다. TX A·TX B는 서로 다른 빈의 `@Transactional` 메서드로 두고, 같은 객체 안 호출(자기 호출)로 부르지 않는다 (7-4절 반례 1과 같은 이유).
 - 발송을 기록한 뒤 프로세스가 멈추면, 재시작 뒤에도 시도는 `REQUESTED`로 남는다. 자동으로 다시 보내지 않고, reconcile이 기존 거래를 조회한다.
@@ -630,8 +630,14 @@ POST /orders/{id}/payment/reconcile           POST /payments/callback
 |---|---|---|---|---|
 | POST | `/api/v1/orders/{orderId}/confirm` | (사용자 식별), `paymentAttemptKey`, `cardType`, `cardNo` (금액은 받지 않고 저장된 주문 합계로 정함) | 결과 대기·미확인이면 **202**, 종결(`CONFIRMED`·`PAYMENT_FAILED`)이면 **200**. 본문은 주문·결제 상태와 reconcile 경로 | 400 입력 오류·재고 부족, 404 본인 소유 아님·없음·이미 POINT로 확정·삭제 상품, 409 상충하는 시도 |
 | POST | `/api/v1/orders/{orderId}/payment/reconcile` | (사용자 식별) | 위와 같음. 이미 종결이면 조회 없이 200 | 404 본인 소유 아님·PG 시도 없음 |
-| POST | `/api/v1/payments/callback` | `transactionKey`, `orderId`(= providerOrderId), `status` | 처리 후 시도 상태 (202·200 규칙 같음) | 404 해당 시도 없음 (상태 변화 없음) |
+| POST | `/api/v1/payments/callback` | `transactionKey`, `orderId`(= providerOrderId), `status`(받지만 쓰지 않음) | 처리 후 `orderId`·`orderStatus`·`paymentStatus`만 (202·200 규칙 같음). PG가 볼 필요 없는 품목·금액은 담지 않는다 | 400 거래 키·주문 번호가 비어 있음, 404 해당 시도 없음 (상태 변화 없음) |
 | GET | `/api/v1/orders/{orderId}`, 관리자 `/api-admin/v1/orders/{orderId}` | — | 기존 필드 + 결제수단, 결제 시도 상태, 최종 결과 | 기존과 같음 |
+
+**응답에 담는 결제 정보** (구현)
+- 고객: `paymentMethod`, `payment.status`, 결제 결과를 기다리거나 모를 때의 `reconcilePath`, 이번 호출에서 PG에 물었지만 확인하지 못했을 때의 `payment.lookupUnavailable: true`. 거래 키·충돌·결과 미확인 이유 같은 PG 내부 값은 담지 않는다.
+- 관리자: 위에 더해 `payment.transactionKey`, `payment.unknownReason`, `payment.conflict`. 운영자가 미확인·충돌 결제를 판단하는 근거다.
+- DRAFT 주문과 이전 POINT 주문에는 `payment`가 없다. 카드번호는 어디에도 없다.
+- `lookupUnavailable`은 저장된 상태가 아니라 그 응답에만 해당한다. 결제를 실패로 정했다는 뜻이 아니고, 상태는 마지막으로 아는 그대로다.
 
 **같은 키·같은 주문 규칙** (주문을 잠근 뒤 판단)
 
@@ -652,15 +658,17 @@ PG 조회는 이 트랜잭션 밖에서 끝내고, 관찰 결과만 넘긴다. �
 | 관찰 | 시도가 종결 전일 때 | 시도가 종결일 때 |
 |---|---|---|
 | `Accepted(key)` | 키를 저장하고 `PENDING` (키가 이미 있고 다르면 충돌 기록) | 변화 없음 |
-| `RejectedNoEffect` | `FAILED`, 주문 `PAYMENT_FAILED`, 예약 `RELEASED` + 재고 반환 1회 | 변화 없음 |
+| `RejectedNoEffect` | 시도가 `REQUESTED`(발송 직후)일 때만 `FAILED`, 주문 `PAYMENT_FAILED`, 예약 `RELEASED` + 재고 반환 1회. 이미 거래를 안 시도(`PENDING`·`UNKNOWN`)에 뒤늦게 온 거절은 근거로 쓰지 않는다 | 변화 없음 |
 | `Unknown(reason)` | `REQUESTED`면 `UNKNOWN` + 이유 기록, 그 밖에는 변화 없음 | 변화 없음 |
-| 조회 1건, 주문·금액·(저장된) 키 일치 | `PENDING`: 키 저장·`PENDING` / `SUCCESS`: 시도 `SUCCESS`, 주문 `CONFIRMED`(결제액), 예약 `CONSUMED` / `FAILED`: 위 확정 실패와 같음 | 같은 결과면 변화 없음, 다른 결과면 덮어쓰지 않고 충돌 기록 |
+| 조회 1건, 주문·금액·(저장된) 키 일치 | `PENDING`: 키 저장·`PENDING` / `SUCCESS`: 시도 `SUCCESS`, 주문 `CONFIRMED`(결제액), 예약 `CONSUMED` / `FAILED`: 위 확정 실패와 같음 | 같은 결과면 변화 없음. 성공과 실패가 **반대**면 덮어쓰지 않고 충돌 기록. 더 오래된 `PENDING` 관찰이 늦게 온 것은 충돌이 아니라 그대로 둔다 |
 | 조회 1건, 불일치 | 충돌 기록, 상태 변화 없음 | 변화 없음 |
 | 조회 0건 | 변화 없음 (create 재발송 없음) | 변화 없음 |
 | 조회 2건 이상 | 충돌 기록, 상태 변화 없음 | 변화 없음 |
 | `Unavailable` (회로 OPEN 포함) | 변화 없음, 응답에 확인 불가 | 변화 없음 |
 
 - 거래 키는 create 응답뿐 아니라 조회 결과에서도 저장한다. 주문별 조회의 1건이 주문·금액과 맞으면 그 키를 저장한다. create 응답을 잃은 시도가 키를 얻는 경로다.
+- **이미 종결한 시도는 callback·reconcile 모두 PG를 다시 조회하지 않고 저장된 결과를 돌려준다.** 그래서 종결 뒤의 반대 결과 충돌(`TERMINAL_RESULT_MISMATCH`)은 종결 직전에 조회를 마친 오래된 관찰이 늦게 적용되는 경쟁에서만 기록된다.
+- 충돌은 마지막으로 기록한 것 하나만 남기고(`conflict_reason`), 상태를 바꾸지 않는다. 이후의 올바른 관찰은 충돌이 기록돼 있어도 종결할 수 있다.
 - 성공·반환 상태 전이와 재고 변경을 **같은 트랜잭션**에서 한다. 중복 callback이나 동시 reconcile이 두 번 확정·반환하지 못하는 이유는 잠금 뒤 상태 확인이지, callback 횟수 제한이 아니다.
 
 ### 9-8. 기존 기능과의 연결
