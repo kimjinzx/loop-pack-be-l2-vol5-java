@@ -117,7 +117,15 @@ public class OrderModel extends BaseEntity {
         return paidAmount;
     }
 
+    /**
+     * 결제수단. 결제수단 컬럼이 생기기 전(4주차까지)에 확정한 주문은 저장된 값이 비어 있다.
+     * 그때의 결제는 모두 포인트였고, PG 주문은 결제를 시작하는 순간 PG로 채워지므로, 확정된 주문의 빈 값은 POINT로 본다.
+     * DRAFT는 아직 결제수단이 없어 비어 있는 그대로다. 저장된 값을 바꾸지 않고 읽을 때만 보정한다.
+     */
     public PaymentMethod getPaymentMethod() {
+        if (paymentMethod == null && status == OrderStatus.CONFIRMED) {
+            return PaymentMethod.POINT;
+        }
         return paymentMethod;
     }
 }

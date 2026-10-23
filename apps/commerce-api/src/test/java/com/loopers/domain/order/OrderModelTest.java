@@ -5,6 +5,7 @@ import com.loopers.support.error.ErrorType;
 import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
+import org.springframework.test.util.ReflectionTestUtils;
 
 import java.util.List;
 
@@ -84,6 +85,59 @@ class OrderModelTest {
 
             // assert
             assertThat(order.getPaymentMethod()).isEqualTo(PaymentMethod.POINT);
+        }
+    }
+
+    @DisplayName("결제수단 컬럼이 생기기 전에 확정한 주문(저장된 결제수단이 비어 있음)을 읽을 때, ")
+    @Nested
+    class LegacyPaymentMethod {
+        private OrderModel legacyConfirmedOrder() {
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            order.confirm(20_000L);
+            ReflectionTestUtils.setField(order, "paymentMethod", null);
+            return order;
+        }
+
+        @DisplayName("확정된 주문이면, 결제수단을 POINT로 보고 결제액·품목은 그대로다.")
+        @Test
+        void readsAsPoint_whenConfirmedOrderHasNoStoredPaymentMethod() {
+            // act
+            OrderModel order = legacyConfirmedOrder();
+
+            // assert
+            assertThat(order.getPaymentMethod()).isEqualTo(PaymentMethod.POINT);
+            assertThat(order.getStatus()).isEqualTo(OrderStatus.CONFIRMED);
+            assertThat(order.getPaidAmount()).isEqualTo(20_000L);
+            assertThat(order.getItems()).hasSize(1);
+        }
+
+        @DisplayName("아직 확정하지 않은 DRAFT 주문은, 결제수단이 비어 있는 그대로다.")
+        @Test
+        void staysEmpty_whenOrderIsDraft() {
+            // arrange
+            OrderModel order = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+
+            // act & assert
+            assertThat(order.getPaymentMethod()).isNull();
+        }
+
+        @DisplayName("PG 결제를 진행한 주문은, 결제 대기·확정·실패 어느 상태에서도 PG로 보이고 POINT로 바뀌지 않는다.")
+        @Test
+        void staysPg_whenOrderWasPaidWithPg() {
+            // arrange
+            OrderModel pending = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            pending.startPgPayment();
+            OrderModel confirmed = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            confirmed.startPgPayment();
+            confirmed.completePgPayment(20_000L);
+            OrderModel failed = new OrderModel(1L, List.of(new OrderItem(1L, 2, 10_000L)));
+            failed.startPgPayment();
+            failed.failPgPayment();
+
+            // act & assert
+            assertThat(pending.getPaymentMethod()).isEqualTo(PaymentMethod.PG);
+            assertThat(confirmed.getPaymentMethod()).isEqualTo(PaymentMethod.PG);
+            assertThat(failed.getPaymentMethod()).isEqualTo(PaymentMethod.PG);
         }
     }
 
