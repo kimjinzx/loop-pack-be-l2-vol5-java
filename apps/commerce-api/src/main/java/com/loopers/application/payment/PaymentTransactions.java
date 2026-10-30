@@ -20,6 +20,7 @@ import lombok.RequiredArgsConstructor;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.time.Clock;
 import java.util.Comparator;
 import java.util.List;
 import java.util.Optional;
@@ -45,6 +46,7 @@ public class PaymentTransactions {
     private final ProductRevisionService productRevisionService;
     private final PaymentAttemptService paymentAttemptService;
     private final StockReservationService stockReservationService;
+    private final Clock clock;
 
     /**
      * TX A의 결과. {@code sendRequired}가 참인 실행만 PG에 거래 생성을 요청한다. 이 트랜잭션을 commit한 실행이 발송 권한을 얻는다.
@@ -137,7 +139,7 @@ public class PaymentTransactions {
         PaymentEffect effect = observation.apply(attempt);
         switch (effect) {
             case SUCCEEDED -> {
-                order.completePgPayment(attempt.getAmount());
+                order.completePgPayment(attempt.getAmount(), clock.instant());
                 reservation.consume();
                 confirmedEvent = OrderConfirmedEvent.from(order);
             }

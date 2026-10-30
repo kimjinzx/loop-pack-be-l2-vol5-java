@@ -14,6 +14,7 @@ import org.mockito.Mockito;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.test.context.bean.override.mockito.MockitoSpyBean;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -76,11 +77,14 @@ class OrderConfirmedPublicationTest extends PaymentScenarioTestBase {
 
             // act
             reconcile().andExpect(status().isOk());
+            Instant confirmedAtBefore = orderJpaRepository.findById(orderId).orElseThrow().getConfirmedAt();
             callbackOf(pgTransaction()).andExpect(status().isOk());
             reconcile().andExpect(status().isOk());
 
             // assert
             assertThat(publisher.events()).hasSize(1);
+            assertThat(orderJpaRepository.findById(orderId).orElseThrow().getConfirmedAt())
+                .as("중복 callback·조회가 확정 시각을 바꾸지 못한다").isEqualTo(confirmedAtBefore);
             assertThat(stock()).as("추가 재고 차감 없음").isEqualTo(INITIAL_STOCK - ORDER_QUANTITY);
             assertThat(pg.createCount()).isEqualTo(1);
         }

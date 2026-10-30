@@ -84,13 +84,18 @@ public class OrderModel extends BaseEntity {
         this.paymentMethod = PaymentMethod.PG;
     }
 
-    // PG 거래의 성공을 확인했다. 결제 대기에서만 들어올 수 있어서 확정 시각은 한 번만 정해진다
+    // PG 거래의 성공을 확인했다. 확정 시각은 지금이다
     public void completePgPayment(Long paidAmount) {
+        completePgPayment(paidAmount, Instant.now());
+    }
+
+    // 결제 대기에서만 들어올 수 있어서 확정 시각은 한 번만 정해진다. 시각은 호출자(주입한 Clock)가 정한다
+    public void completePgPayment(Long paidAmount, Instant confirmedAt) {
         requirePaymentPending();
         this.status = OrderStatus.CONFIRMED;
         this.paidAmount = paidAmount;
         // DB에 저장되는 정밀도(밀리초)로 맞춰, 이벤트에 담은 값과 나중에 읽은 값이 같게 한다
-        this.confirmedAt = Instant.now().truncatedTo(ChronoUnit.MILLIS);
+        this.confirmedAt = confirmedAt.truncatedTo(ChronoUnit.MILLIS);
     }
 
     // PG 거래의 확정 실패를 확인했다

@@ -4,6 +4,7 @@ import org.junit.jupiter.api.DisplayName;
 import org.junit.jupiter.api.Nested;
 import org.junit.jupiter.api.Test;
 
+import java.time.Instant;
 import java.util.List;
 
 import static org.assertj.core.api.Assertions.assertThat;
@@ -44,6 +45,21 @@ class OrderConfirmedEventTest {
             assertThat(pointConfirmed.getConfirmedAt()).as("포인트 확정은 확정 시각을 만들지 않는다").isNull();
             assertThat(failed.getConfirmedAt()).isNull();
         }
+    }
+
+    @DisplayName("주입한 시각으로 확정하면, 그 시각(밀리초 정밀도)이 확정 시각이 되고 이벤트에 그대로 담긴다.")
+    @Test
+    void usesInjectedConfirmationTime() {
+        // arrange
+        OrderModel order = new OrderModel(1L, List.of(new OrderItem(7L, 2, 1_000L)));
+        order.startPgPayment();
+
+        // act
+        order.completePgPayment(2_000L, Instant.parse("2026-09-07T01:00:00.123456789Z"));
+
+        // assert
+        assertThat(order.getConfirmedAt()).isEqualTo(Instant.parse("2026-09-07T01:00:00.123Z"));
+        assertThat(OrderConfirmedEvent.from(order).confirmedAt()).isEqualTo("2026-09-07T01:00:00.123Z");
     }
 
     @DisplayName("이벤트는, ")
