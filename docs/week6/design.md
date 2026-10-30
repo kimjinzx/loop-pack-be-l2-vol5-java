@@ -1,6 +1,6 @@
 # 주문 확정 이벤트와 구매 활동 설계 — Week 6
 
-> 상태: **producer 구현 중 (2026-10-29)**. 이 문서는 이벤트 계약·경계·실패 지점·결정 사항을 정한다. consumer(구매 활동 저장)와 전달 실험은 구현하면서 4절 이후를 채운다.
+> 상태: **구현 중 (2026-10-30)**. producer와 consumer, 전달 실험을 구현하고 있다. 이 문서는 이벤트 계약·경계·실패 지점·결정 사항과 테스트 구성을 정한다.
 > 5주차의 결제 흐름(`docs/week5/pg-contract.md`, `design.md` 9절)은 바꾸지 않고, 확정된 뒤의 사실을 이벤트로 내보내는 일만 더한다.
 
 ## 0. 범위
@@ -103,18 +103,47 @@ send를 기다리는 시간은 `order-event.send-timeout`(5초)이다. 기다리
 | bootstrap 주소 | admin만 `kafka:9092`, 나머지는 `localhost:19092`로 섞여 있었다 | 하나의 호스트 주소만 쓴다 (컨테이너 내부 주소와 섞지 않는다) |
 | producer | acks·멱등·timeout 미지정 | `acks=all`, `enable.idempotence=true`, `max.block.ms=5000`, `delivery.timeout.ms=30000` |
 
-기존 batch listener factory(`BATCH_LISTENER`: batch·MANUAL·concurrency 3)는 바꾸지 않는다. 이번 이벤트용 record factory는 consumer 구현 때 별도로 추가한다.
+기존 batch listener factory(`BATCH_LISTENER`: batch·MANUAL·concurrency 3)는 바꾸지 않는다. 이번 이벤트용 record factory(`orderActivityKafkaListenerContainerFactory`)는 `commerce-streamer`에 따로 둔다.
 테스트 broker는 `modules:kafka` testFixtures의 `KafkaBrokerFixture`(Testcontainers, 단일 노드)이고 처음 쓸 때만 컨테이너를 띄운다. 고유 topic·group을 쓰며 다른 실행의 topic·group을 지우지 않는다.
 
 `acks=all`은 단일 broker에서 복제 장애 보장을 확인하지 못한다. 이 환경의 테스트가 증명하는 것은 "broker가 알려 준 위치에서 같은 record를 읽는다"까지다.
 
-## 5. consumer (commerce-streamer) — 구현하며 채운다
+## 5. consumer (commerce-streamer)
 
-- 저장: 소비 완료 기록(`eventId`·`orderId` 유일, 고정 payload 일치)과 상품 구매 활동(`orderId`·`productId`별 1행, `quantity`·`confirmedAt` 보존)을 같은 DB TX에서 commit한다.
-- 같은 eventId·같은 사실의 재전달은 no-op, 같은 eventId의 다른 사실·같은 orderId의 다른 eventId는 충돌로 드러낸다. 중복 판단은 DB 유일 제약으로 한다.
-- record listener(`MANUAL_IMMEDIATE`, concurrency 1, 중단형 error handler): DB commit 뒤 ack.
+### 5-1. 저장과 정합성
 
-## 6. 테스트 (producer 쪽)
+| 테이블 | 보호하는 규칙 |
+|---|---|
+| `processed_order_confirmation` | `event_id` 유일, `order_id` 유일, 정규화한 사실의 `fingerprint`(SHA-256) |
+| `product_purchase_activity` | `(order_id, product_id)` 유일, `quantity`·`confirmed_at` 보존. 상품 행을 참조하지 않는다 |
+
+- 완료 기록과 모든 품목은 한 DB TX(`PurchaseActivityRecorder.record`)에서 저장한다. 중간 품목이 실패하면 완료 기록과 앞서 저장한 품목도 rollback된다.
+- 같은 eventId·같은 사실의 재전달은 정상 no-op(`ALREADY_PROCESSED`)이다. 같은 eventId에 다른 수량·확정 시각이 오거나 같은 orderId에 다른 eventId가 오면 `OrderEventConflictException`으로 드러내고 활동을 더하지 않는다.
+- 중복 판단은 먼저 조회하는 것으로 끝내지 않는다. 조회는 흔한 재전달을 빨리 거르는 용도이고, 동시 소비는 DB 유일 제약이 막는다. 유일 제약에 걸려 TX가 rollback되면(`PurchaseActivityHandler`) **새 TX**에서 기존 완료 사실이 같은지 확인한다. 같으면 no-op, 다르면 충돌, 기존 사실이 없으면 "중복"으로 바꾸지 않고 원래 무결성 오류를 그대로 올린다.
+- 완료 기록·활동 저장은 `Handler`(TX 없음) → `Recorder`(TX) 두 빈으로 나눠, 같은 객체 안에서 부르면 TX가 적용되지 않는 문제를 피한다.
+- 삭제·비노출 상품을 다시 노출하지 않는다. 소비자는 상품 테이블을 읽지 않고 과거 주문의 `productId`를 식별자로만 보존한다.
+
+### 5-2. 이벤트 검증
+
+`OrderConfirmedParser`가 계약(eventType·schemaVersion·정수 id·ISO 시각·key와 orderId 일치·양수 수량)을 확인한다. 계약을 지키지 않으면 `InvalidOrderEventException`이고, 모르는 eventType·schemaVersion을 건너뛰지 않는다(건너뛰면 구매 활동에서 조용히 빠진다). 계약을 어긴 record가 한 건 있으면 그 partition의 소비가 거기서 멈춘다. 데이터 오류를 자동으로 버리는 정책은 이번 범위가 아니다.
+
+### 5-3. listener 설정
+
+| 설정 | 값 | 이유 |
+|---|---|---|
+| 단위 | record (`batchListener=false`) | 한 DB TX와 ack가 한 record에 대응 |
+| ack mode | `MANUAL_IMMEDIATE` | handler가 DB commit을 끝낸 뒤 `acknowledge()`를 부르는 순간 그 offset을 commit |
+| `enable.auto.commit` | `false` (실제 `ConsumerConfig` 값으로 검증) | 자동 commit은 DB 완료와 무관하게 offset을 올린다 |
+| error handler | `CommonContainerStoppingErrorHandler` | 실패 record를 건너뛰지 않고 컨테이너를 멈춘다. 실패 record의 offset은 commit되지 않고, 고친 뒤 같은 group으로 재시작하면 같은 record가 다시 온다 |
+| `concurrency` | 1 | record를 순서대로 처리 |
+| `auto.offset.reset` | `earliest` | 새 group이 이미 쌓인 확정 이벤트를 건너뛰지 않게 한다(공통 설정의 latest는 새 group의 과거 이벤트를 버린다) |
+| fetch | `fetch.min.bytes=1`, `fetch.max.wait.ms=500` | 공통 batch factory의 1MiB·5초는 적은 양의 record를 최대 5초 늦게 보이게 한다. 확정 이벤트는 한 건씩 오므로 짧게 둔다. 긴 sleep으로 덮지 않는다 |
+
+listener는 실패를 로그(ERROR, topic·partition·offset)로 남기고 예외를 그대로 올린다. 삼키지 않는다.
+
+## 6. 테스트
+
+### 6-1. producer (commerce-api)
 
 | 테스트 | 확인 |
 |---|---|
@@ -122,7 +151,24 @@ send를 기다리는 시간은 `order-event.send-timeout`(5초)이다. 기다리
 | `OrderConfirmedPublicationTest` | 처음 확정에서 한 번 발행, 중복 적용 무발행, 대기·실패·rollback 무발행, 발행 실패 시 주문·예약·PG 호출 유지 |
 | `KafkaOrderEventPublisherTest` | 실제 broker에 보내고 broker가 알려 준 위치에서 key·본문 읽기, 같은 key는 같은 partition, broker 불통 시 예외 없이 실패 반환 |
 
-통합 테스트는 broker 자리에 발행 호출을 기록하는 `RecordingOrderEventPublisher`를 쓴다. 실제 broker 전송은 위 `KafkaOrderEventPublisherTest`가 맡는다.
+통합 테스트는 broker 자리에 발행 호출을 기록하는 `RecordingOrderEventPublisher`를 쓴다. 실제 broker 전송은 `KafkaOrderEventPublisherTest`가 맡는다.
+
+### 6-2. consumer (commerce-streamer)
+
+| 테스트 | 확인 |
+|---|---|
+| `OrderConfirmedParserTest` | 계약 예시 읽기, 순서·분할이 달라도 같은 fingerprint, 계약 위반 거부 |
+| `OrderConfirmedListenerTest` | handler 뒤에 ack, handler 실패·충돌·검증 실패는 ack 안 함 |
+| `PurchaseActivityIntegrationTest` | 저장 규칙(주문 42·43), 재전달 no-op, 충돌 2종, 중간 품목 실패 rollback, 동시 중복 |
+| `OrderActivityKafkaConfigTest` | 실제 ConsumerConfig 값, 세 클라이언트의 bootstrap 일치, 컨테이너 설정 |
+
+### 6-3. 전달 실험 (`*KafkaDeliveryTest`, 실제 broker)
+
+| 테스트 | 확인 |
+|---|---|
+| `PartitionAssignmentKafkaDeliveryTest` | partition 2개, 같은 group의 consumer 1→2→3 배정표(broker가 본 값), 명시 partition 전송·수신, 같은 key는 같은 partition |
+| `OffsetRedeliveryKafkaDeliveryTest` | 실험 A: DB commit 뒤 offset을 commit하지 않고 종료하면 같은 위치에서 재전달되고 구매 효과는 한 번(committed offset n → n → n+1) |
+| `ListenerFailureKafkaDeliveryTest` | 실험 B: DB commit 전 오류 시 전체 rollback·offset 미진행·listener 중단·ERROR 로그, 오류 제거 후 같은 group으로 재시작하면 재전달·저장·ack |
 
 ## 7. 알려진 한계
 
